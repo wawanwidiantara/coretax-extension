@@ -37,6 +37,11 @@ export default {
                     DEFAULT: "hsl(var(--popover))",
                     foreground: "hsl(var(--popover-foreground))",
                 },
+                brand: {
+                    blue: "#1A2B50",
+                    yellow: "#FBC02D",
+                    red: "#D32F2F",
+                },
                 card: {
                     DEFAULT: "hsl(var(--card))",
                     foreground: "hsl(var(--card-foreground))",

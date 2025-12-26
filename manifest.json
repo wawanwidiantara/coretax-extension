@@ -1,9 +1,16 @@
 {
     "manifest_version": 3,
-    "name": "Coretax Extension",
+    "name": "CoreTax Assist",
     "version": "1.0.0",
+    "description": "Your AI-powered assistant for CoreTax",
     "action": {
-        "default_popup": "index.html"
+        "default_popup": "index.html",
+        "default_icon": {
+            "128": "icon-128.png"
+        }
+    },
+    "icons": {
+        "128": "icon-128.png"
     },
     "background": {
         "service_worker": "src/background.ts",
@@ -12,10 +19,11 @@
     "content_scripts": [
         {
             "js": [
-                "src/content.ts"
+                "src/content.tsx"
             ],
             "matches": [
-                "https://coretaxdjp.pajak.go.id/*"
+                "https://coretaxdjp.pajak.go.id/*",
+                "http://localhost:*/*"
             ]
         }
     ],
