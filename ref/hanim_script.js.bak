@@ -1,0 +1,32 @@
+// === hanim_script.js (Chrome API Compatible) ===
+
+document.addEventListener("DOMContentLoaded", () => {
+    chrome.storage.local.get("tableContent", (result) => {
+        const tableBody = document.querySelector("#dataTable tbody");
+        tableBody.textContent = ''; // Kosongkan dengan aman
+
+        if (result.tableContent) {
+            // Gunakan DOMParser untuk mem-parse string HTML dengan aman
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(`<table><tbody>${result.tableContent}</tbody></table>`, 'text/html');
+            const tempTbody = doc.querySelector('tbody');
+
+            // Tambahkan nomor otomatis ke setiap baris
+            Array.from(tempTbody.rows).forEach((row, index) => {
+                const nomorCell = document.createElement("td");
+                nomorCell.textContent = index + 1;
+                row.insertBefore(nomorCell, row.firstChild);
+                tableBody.appendChild(row); // Pindahkan baris ke tabel utama
+            });
+
+        } else {
+            // Gunakan DOM API
+            const tr = document.createElement('tr');
+            const td = document.createElement('td');
+            td.colSpan = 9;
+            td.textContent = 'Tidak ada data untuk ditampilkan.';
+            tr.appendChild(td);
+            tableBody.appendChild(tr);
+        }
+    });
+});

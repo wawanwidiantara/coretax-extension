@@ -1,0 +1,161 @@
+// === background.js (FIX: Kirim pesan 'downloadComplete') ===
+
+console.log("Background script aktif.");
+
+// Fungsi untuk membuat dan mengunduh file CSV
+function downloadCSV(data) {
+    let csvContent = "data:text/csv;charset=utf-8,";
+    data.forEach(rowArray => {
+        let row = rowArray.join(",");
+        csvContent += row + "\r\n";
+    });
+    const encodedUri = encodeURI(csvContent);
+    chrome.downloads.download({
+        url: encodedUri,
+        filename: "rekap_pk_coretax.csv"
+    });
+}
+
+// Listener utama diperbaiki untuk menangani semua pesan secara konsisten
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Gunakan flag untuk menentukan apakah respons bersifat asynchronous
+  let isAsync = false;
+
+  switch (message.action) {
+    case "downloadExcel":
+      downloadCSV(message.data);
+      sendResponse({ status: "Perintah download CSV diterima." });
+      break;
+
+    case "downloadFile":
+      chrome.downloads.download({
+        url: message.url,
+        filename: message.filename
+      });
+      sendResponse({ status: "Perintah download file diterima." });
+      break;
+
+    case "saveTableContent":
+      isAsync = true; // Tandai sebagai async karena ada callback
+      chrome.storage.local.set({ tableContent: message.content }, () => {
+        const hanimUrl = chrome.runtime.getURL("hanim.html");
+        chrome.tabs.create({ url: hanimUrl });
+        sendResponse({ status: "Tabel disimpan dan halaman baru dibuka." });
+      });
+      break;
+
+    case "openDownloadManagerPage":
+      const managerUrl = chrome.runtime.getURL("download-manager.html");
+      chrome.tabs.create({ url: managerUrl });
+      sendResponse({ status: "Halaman download manager dibuka." });
+      break;
+
+    case "openRenamePreviewPage":
+      const previewUrl = chrome.runtime.getURL("rename-preview.html");
+      chrome.tabs.create({ url: previewUrl });
+      sendResponse({ status: "Halaman rename preview dibuka." });
+      break;
+
+    case "getDownloadStatus":
+      isAsync = true; // Tandai sebagai async karena ada promise
+      chrome.storage.local.get("latestDownloadedFiles").then(result => {
+        const completedFiles = result.latestDownloadedFiles || [];
+        sendResponse({ downloadedFiles: completedFiles });
+      });
+      break;
+
+    case "fetchPdfAsArrayBuffer":
+      isAsync = true; // Tandai sebagai async karena ada fetch (promise)
+      fetch(message.url)
+        .then(response => {
+          if (!response.ok) throw new Error(`Gagal fetch: Status ${response.status}`);
+          return response.arrayBuffer();
+        })
+        .then(buffer => sendResponse(buffer))
+        .catch(error => {
+          console.error(`Gagal fetch PDF di background untuk URL: ${message.url}`, error);
+          sendResponse({ error: error.message });
+        });
+      break;
+
+    default:
+      // Untuk action yang tidak dikenali, kirim balasan default agar channel tidak error
+      sendResponse({ status: "Action tidak dikenali.", action: message.action });
+      break;
+  }
+
+  // Hanya return true jika operasi ditandai sebagai asynchronous
+  return isAsync;
+});
+
+// === background.js (BAGIAN LISTENER DOWNLOAD DIPERBAIKI) ===
+
+// Listener download yang sudah diperbaiki (Anti Race Condition)
+chrome.downloads.onChanged.addListener((delta) => {
+  if (delta.state && delta.state.current === "complete") {
+    
+    chrome.downloads.search({ id: delta.id }).then((results) => {
+      if (results && results[0]) {
+        const item = results[0];
+        // Cek URL (http/https atau blob)
+        if (item.url.startsWith('http') || item.url.startsWith('blob')) {
+            const filename = item.filename.split(/[/\\]/).pop();
+            const url = item.url;
+
+            // Ambil data Job dan File sekaligus untuk mengurangi latency
+            chrome.storage.local.get(["latestDownloadedFiles", "downloadJobInfo"], (data) => {
+              let latest = data.latestDownloadedFiles || [];
+              const jobInfo = data.downloadJobInfo;
+
+              // Cek duplikasi di array lokal
+              if (!latest.some(f => f.filename === filename)) {
+                latest.push({ filename, url });
+                
+                // --- PERBAIKAN UTAMA DI SINI ---
+                // Hitung progress berdasarkan PANJANG ARRAY, bukan increment manual
+                // Ini mencegah angka stuck jika download terjadi bersamaan
+                const currentCount = latest.length;
+                
+                // Simpan update file terbaru
+                chrome.storage.local.set({ latestDownloadedFiles: latest });
+
+                // Jika ada job yang sedang berjalan
+                if (jobInfo && jobInfo.expected > 0) {
+                    
+                    // Update info job (opsional, untuk persistensi)
+                    jobInfo.completed = currentCount;
+                    chrome.storage.local.set({ downloadJobInfo: jobInfo });
+
+                    const successfulFilesList = latest.map(f => f.filename);
+
+                    // Kirim pesan ke SEMUA tab pajak (agar UI update)
+                    chrome.tabs.query({ url: "*://coretaxdjp.pajak.go.id/*" }, (tabs) => {
+                        tabs.forEach(tab => {
+                            chrome.tabs.sendMessage(tab.id, {
+                                action: "updateDownloadProgress",
+                                current: currentCount, // Kirim hasil hitungan array
+                                total: jobInfo.expected,
+                                successfulFiles: successfulFilesList
+                            });
+
+                            // Cek apakah sudah selesai semua
+                            if (currentCount >= jobInfo.expected) {
+                                console.log("Batch download selesai:", currentCount, "/", jobInfo.expected);
+                                chrome.tabs.sendMessage(tab.id, {
+                                    action: "downloadComplete",
+                                    successCount: currentCount,
+                                    failedList: [] 
+                                });
+                                // Bersihkan job info
+                                chrome.storage.local.remove('downloadJobInfo');
+                            }
+                        });
+                    });
+                }
+              }
+            });
+        }
+      }
+    });
+  }
+});

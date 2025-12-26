@@ -1,0 +1,3055 @@
+// === content.js (UPDATE: Rename PDF Khusus Halaman Dokumen Registration) ===
+
+console.log("Content script aktif.");
+
+if (!window.__invoiceDownloaderInjected) {
+  window.__invoiceDownloaderInjected = true;
+
+  class InvoiceDownloader {
+   constructor() {
+      this.isDownloadCancelled = false;
+      this.cancelTimer = null;
+      this.currentDownloadQueue = []; 
+      this.completedDownloadCount = 0;
+      this.downloadFinished = false; 
+      
+      // === [BARU] SHIFT-SELECT LOGIC ===
+      this.lastCheckedRowIndex = -1; // Index baris terakhir yang dicentang
+      this.isShiftKeyPressed = false; // Status tombol Shift
+      // ==================================
+
+      chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (request.action === "downloadPDFs" || request.action === "downloadBupot") {
+          this.initiateDownload();
+          sendResponse({ status: "Perintah download diterima" });
+        }
+        
+        if (request.action === "updateDownloadProgress") {
+            if (this.downloadFinished) return true; 
+            this.completedDownloadCount = request.current; 
+            this.updateLiveProgressList(request.current, request.total, request.successfulFiles || []);
+            this.resetCancelTimer();
+        }
+
+        if (request.action === "downloadComplete") {
+            if (this.downloadFinished) return true; 
+            console.log("Received downloadComplete message.");
+            this.downloadFinished = true; 
+            this.stopCancelTimer(); 
+            this.displayFinalNotification(request.successCount, request.failedList || []);
+        }
+        
+        return true;
+      });
+
+      this.removeOldButtons();
+      this.startMutationObserver();
+      
+      // === [BARU] Penanganan Global Keydown / Keyup untuk Shift-Select ===
+      document.addEventListener('keydown', (e) => {
+          if (e.key === 'Shift') {
+              this.isShiftKeyPressed = true;
+          }
+          // Panggil fungsi penanganan shift-select
+          this.handleShiftSelect(e);
+      });
+      
+      document.addEventListener('keyup', (e) => {
+          if (e.key === 'Shift') {
+              this.isShiftKeyPressed = false;
+          }
+      });
+      // ====================================================================
+    }
+
+    startMutationObserver() {
+        const runChecks = () => {
+            this.injectToolbarButton();
+            this.attachRowClickListeners(); 
+            this.injectFloatingScrollControls();
+            this.initRealTimeCalculator(); // [BARU] Aktifkan Kalkulator
+        };
+
+        const observer = new MutationObserver(runChecks);
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+        runChecks();
+        
+        // --- TEMPATKAN KODE DI SINI (SETELAH runChecks() DAN SEBELUM penutup fungsi) ---
+        
+        // --- [BARU] FUNGSI PINTASAN KEYBOARD (CTRL + ALT + A) ---
+        document.addEventListener('keydown', (e) => {
+            // Cek jika: Ctrl + Alt + A (Atau kombinsasi lain yang Anda sukai)
+            if (e.ctrlKey && e.altKey && (e.key === 'a' || e.key === 'A')) {
+                e.preventDefault();
+                
+                // Logika Pilih Semua (Tampil)
+                document.querySelectorAll('.p-datatable-tbody tr:not([style*="display: none"]) input[type="checkbox"]').forEach(cb => { 
+                    if(!cb.checked) cb.click(); 
+                });
+                setTimeout(() => this.calculateTotals(), 200);
+                
+                // Notifikasi Visual Singkat
+                this.displayAlertPopup("✅ Semua data yang terlihat di layar telah terpilih.");
+            }
+        }, true);
+        // --- AKHIR KODE PINTASAN KEYBOARD ---
+
+    }
+
+// --- [BARU] FITUR 1: KALKULATOR REAL-TIME ---
+    initRealTimeCalculator() {
+        if (document.getElementById('hanim-live-calc')) return;
+
+        const calcBox = document.createElement('div');
+        calcBox.id = 'hanim-live-calc';
+        Object.assign(calcBox.style, {
+            position: 'fixed', bottom: '30px', left: '30px', zIndex: '9999',
+            background: 'linear-gradient(145deg, #212529, #343a40)',
+            color: '#fff', padding: '15px', borderRadius: '12px',
+            boxShadow: '0 8px 20px rgba(0,0,0,0.4)',
+            fontFamily: 'Segoe UI, sans-serif', fontSize: '13px',
+            minWidth: '220px', border: '1px solid #495057',
+            display: 'none', transition: 'all 0.3s ease'
+        });
+
+        calcBox.innerHTML = `
+            <div style="font-weight:bold; color:#4cc9f0; margin-bottom:8px; border-bottom:1px solid #495057; padding-bottom:5px; display:flex; justify-content:space-between;">
+                <span>🧮 Kalkulator</span>
+                <span id="calc-count" style="background:#4cc9f0; color:#000; padding:0 6px; borderRadius:4px; font-size:11px;">0</span>
+            </div>
+            <div style="display:grid; grid-template-columns: 50px 1fr; gap:6px; align-items:center;">
+                <div style="color:#adb5bd; font-size:12px;">DPP</div>
+                <div style="text-align:right; font-family:monospace; font-size:14px;" id="calc-dpp">0</div>
+                
+                <div style="color:#adb5bd; font-size:12px;">PPN</div>
+                <div style="text-align:right; font-family:monospace; font-size:14px;" id="calc-ppn">0</div>
+                
+                <div style="color:#ffd700; font-weight:bold; font-size:12px; border-top:1px solid #555; padding-top:4px;">TOTAL</div>
+                <div style="text-align:right; font-family:monospace; font-weight:bold; color:#ffd700; font-size:15px; border-top:1px solid #555; padding-top:4px;" id="calc-total">0</div>
+            </div>
+            <div style="font-size:10px; color:#6c757d; margin-top:8px; text-align:center;">Real-time Selection</div>
+        `;
+        document.body.appendChild(calcBox);
+		
+		// --- TAMBAHKAN BARIS INI ---
+        // Parameter: (Elemen, Kunci Unik Penyimpanan)
+        this.makeDraggable(calcBox, 'pos_hanim_calc');
+
+        // Event listener global untuk update kalkulator
+        document.addEventListener('change', (e) => {
+            if (e.target.type === 'checkbox' || e.target.closest('.p-checkbox')) {
+                setTimeout(() => this.calculateTotals(), 100);
+            }
+        });
+    }
+
+    calculateTotals() {
+        const checkboxes = document.querySelectorAll('input[type="checkbox"]:checked');
+        const calcBox = document.getElementById('hanim-live-calc');
+        
+        if (checkboxes.length === 0) {
+            if (calcBox) calcBox.style.display = 'none';
+            return;
+        }
+        if (calcBox) calcBox.style.display = 'block';
+
+        let totalDPP = 0;
+        let totalPPN = 0;
+        let count = 0;
+
+        // Tentukan index kolom (Input/Output tax biasanya mirip indexnya utk DPP/PPN)
+        // Col 11: DPP, Col 13: PPN (Adjust jika layout tabel berubah)
+        const dppIndex = 11;
+        const ppnIndex = 13;
+
+        checkboxes.forEach(cb => {
+            const row = cb.closest('tr');
+            if (!row || row.querySelector('th')) return; 
+
+            const cells = row.querySelectorAll('td');
+            if (cells[dppIndex] && cells[ppnIndex]) {
+                // Bersihkan format "Rp 1.000.000" -> 1000000
+                const dppText = cells[dppIndex].innerText.replace('Rp', '').replace(/\./g, '').replace(/,/g, '.').trim();
+                const ppnText = cells[ppnIndex].innerText.replace('Rp', '').replace(/\./g, '').replace(/,/g, '.').trim();
+                
+                const dppVal = parseFloat(dppText) || 0;
+                const ppnVal = parseFloat(ppnText) || 0;
+
+                totalDPP += dppVal;
+                totalPPN += ppnVal;
+                count++;
+            }
+        });
+
+        const formatRp = (num) => new Intl.NumberFormat('id-ID').format(num);
+
+        document.getElementById('calc-count').innerText = `${count} Data`;
+        document.getElementById('calc-dpp').innerText = formatRp(totalDPP);
+        document.getElementById('calc-ppn').innerText = formatRp(totalPPN);
+        document.getElementById('calc-total').innerText = "Rp " + formatRp(totalDPP + totalPPN);
+    }
+
+// --- FITUR: GLASSMORPHISM SCROLL (FIXED SIZE + HIGH Z-INDEX) ---
+injectFloatingScrollControls() {
+    if (document.getElementById('hanim-floating-scroll')) return;
+
+    // Icon SVG
+    const icons = {
+        up: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg>',
+        down: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
+        left: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+        right: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>',
+        move: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.5;"><polyline points="5 9 2 12 5 15"></polyline><polyline points="9 5 12 2 15 5"></polyline><polyline points="19 9 22 12 19 15"></polyline><polyline points="9 19 12 22 15 19"></polyline><circle cx="12" cy="12" r="1"></circle></svg>'
+    };
+
+    const container = document.createElement('div');
+    container.id = 'hanim-floating-scroll';
+    
+    // STYLE WADAH (FIXED) - TRANSPARAN
+    Object.assign(container.style, {
+        position: 'fixed', 
+        bottom: '100px', 
+        right: '30px', 
+        zIndex: '2147483647', 
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px',
+        padding: '16px 12px', borderRadius: '24px', cursor: 'move',
+        
+        // WADAH UTAMA TETAP TRANSPARAN PENUH
+        backgroundColor: 'transparent',
+        backdropFilter: 'none',
+        webkitBackdropFilter: 'none',
+        boxShadow: 'none',
+        
+        width: 'fit-content',
+        height: 'auto',
+        flexShrink: '0',
+        transform: 'translateZ(0)' 
+    });
+
+    container.onmouseenter = () => { container.style.opacity = '1'; };
+    container.onmouseleave = () => { container.style.opacity = '0.7'; };
+    container.style.opacity = '0.7';
+
+    // STYLE TOMBOL (FIXED SIZE) - OPACITY DINAIDIKKAN KE 0.6
+    const btnStyle = `
+        width: 42px; height: 42px; min-width: 42px; min-height: 42px; flex-shrink: 0;
+        background: rgba(255, 255, 255, 0.6); /* Nilai alpha ditingkatkan (0.6) */
+        color: #e0e0e0; 
+        border: 1px solid rgba(255,255,255,0.7); /* Border ditingkatkan */
+        border-radius: 12px;
+        display: flex; align-items: center; justify-content: center;
+        cursor: pointer; transition: all 0.2s ease;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.3); /* Shadow sedikit ditingkatkan */
+        box-sizing: border-box;
+    `;
+
+    const createBtn = (iconHtml, x, y, title) => {
+        const btn = document.createElement('div');
+        btn.innerHTML = iconHtml; btn.title = title; btn.style.cssText = btnStyle;
+        
+        // HOVER EFFECT - OPACITY DINAIDIKKAN KE 0.8
+        btn.onmouseenter = () => {
+            btn.style.background = 'rgba(255, 255, 255, 0.8)'; // Hover diperkuat
+            btn.style.boxShadow = '0 0 15px rgba(0, 123, 255, 0.4)';
+            btn.style.color = '#fff'; btn.style.transform = 'translateY(-2px)';
+        };
+        
+        // MOUSE LEAVE EFFECT - KEMBALI KE 0.6
+        btn.onmouseleave = () => {
+            btn.style.background = 'rgba(255, 255, 255, 0.6)'; // Kembali ke 0.6
+            btn.style.boxShadow = '0 4px 10px rgba(0,0,0,0.3)';
+            btn.style.color = '#e0e0e0'; btn.style.transform = 'translateY(0)';
+        };
+        
+        btn.onmousedown = (e) => { e.stopPropagation(); btn.style.transform = 'scale(0.92)'; };
+        btn.onmouseup = () => btn.style.transform = 'scale(1) translateY(-2px)';
+        btn.onclick = (e) => {
+            const tableContainer = document.querySelector('.p-datatable-wrapper') || document.querySelector('.table-responsive');
+            if (x !== 0 && tableContainer) tableContainer.scrollBy({ left: x, behavior: 'smooth' });
+            else window.scrollBy({ top: y, left: x, behavior: 'smooth' });
+        };
+        return btn;
+    };
+
+    const scrollAmount = 300; 
+    const btnUp = createBtn(icons.up, 0, -scrollAmount, "Atas");    
+    const btnDown = createBtn(icons.down, 0, scrollAmount, "Bawah");   
+    const btnLeft = createBtn(icons.left, -scrollAmount, 0, "Kiri");  
+    const btnRight = createBtn(icons.right, scrollAmount, 0, "Kanan");  
+
+    // Mengatur tata letak: Panah Bawah di tengah middleRow
+    const middleRow = document.createElement('div');
+    Object.assign(middleRow.style, { display: 'flex', gap: '8px', justifyContent: 'center', flexShrink: '0' });
+    
+    middleRow.appendChild(btnLeft); 
+    middleRow.appendChild(btnDown); 
+    middleRow.appendChild(btnRight);
+
+    const handleArea = document.createElement('div');
+    handleArea.innerHTML = icons.move;
+    Object.assign(handleArea.style, { marginBottom: '8px', cursor: 'move', padding: '4px', flexShrink: '0' });
+
+    const creditText = document.createElement('div');
+    creditText.innerHTML = '<span style="opacity:0.6">Support by</span><br><span style="color:#4cc9f0; font-weight:600">@kelapapusing</span>';
+    Object.assign(creditText.style, {
+        fontSize: '9px', marginTop: '12px', textAlign: 'center', lineHeight: '1.3', color: '#fff', 
+        pointerEvents: 'none', fontFamily: "'Segoe UI', sans-serif", flexShrink: '0', width: 'max-content'
+    });
+
+    container.appendChild(handleArea);
+    container.appendChild(btnUp);      
+    container.appendChild(middleRow);  
+    container.appendChild(creditText); 
+
+    document.body.appendChild(container);
+
+    if (this.makeDraggable) this.makeDraggable(container, 'pos_hanim_scroll');
+}
+	// --- SISIPKAN INI DI ATAS resetCancelTimer ---
+    startCancelTimer() {
+        this.stopCancelTimer(); 
+        // Set batas waktu 60 detik (1 menit) per batch
+        this.cancelTimer = setTimeout(() => {
+            if (this.downloadFinished) return;
+            
+            console.warn("⚠️ Download Timeout - Waktu habis.");
+            this.isDownloadCancelled = true;
+            this.removeProgressUI();
+            
+            const remainingCount = this.currentDownloadQueue.length - this.completedDownloadCount;
+            if (remainingCount > 0) {
+                const failedItems = this.currentDownloadQueue.slice(this.completedDownloadCount);
+                this.showRetryPopup(failedItems);
+            } else {
+                this.displayAlertPopup("Waktu unduhan habis.");
+            }
+        }, 60000); 
+    }
+    // ---------------------------------------------
+
+    resetCancelTimer() { this.startCancelTimer(); }
+    stopCancelTimer() { if (this.cancelTimer) clearTimeout(this.cancelTimer); }
+    removeOldButtons() {
+        const oldWrapper = document.querySelector('.custom-btn-wrapper');
+        if(oldWrapper) oldWrapper.remove();
+    }
+    checkPageCompatibility() { return true; }
+
+ injectToolbarButton() {
+      // 1. Cari elemen Toolbar bawaan DJP
+      const toolbar = document.querySelector('.p-datatable-header .p-toolbar-group-left, .p-datatable-header .p-d-inline-blok > span.float-left');
+      
+      // Hanya inject jika toolbar ditemukan dan belum ada wrapper kita
+      if (toolbar && !toolbar.querySelector('.custom-btn-wrapper')) {
+        this.removeOldButtons();
+        
+        const wrapper = document.createElement('div');
+        wrapper.className = 'custom-btn-wrapper';
+        wrapper.style.cssText = "display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap;"; 
+        
+        // --- KONFIGURASI URL & HALAMAN ---
+        const iconUrl = "https://d1bpj0tv6vfxyp.cloudfront.net/articles/f83b30d9-adb0-44d1-8c58-2eb915e3053f_article_image_url.webp";
+        const currentUrl = window.location.href;
+        
+        const isBupotIssuedPage = currentUrl.includes('/withholding-slips-portal/id-ID/ebupotbpu/issued') ||
+                                  currentUrl.includes('/withholding-slips-portal/id-ID/ebupotmp/issued') ||
+                                  currentUrl.includes('/withholding-slips-portal/id-ID/ebupotbp21/issued') ||
+                                  currentUrl.includes('/withholding-slips-portal/id-ID/ebupotbpa1/issued');
+        
+        const isBupotPage = currentUrl.includes('/registration-portal/id-ID/documents');
+        const isOutputTaxPage = currentUrl.includes('/e-invoice-portal/id-ID/output-tax');
+        const isInputTaxPage = currentUrl.includes('/e-invoice-portal/id-ID/input-tax');
+        const isInputReturnPage = currentUrl.includes('/e-invoice-portal/id-ID/input-return');
+
+        // --- STYLE DASAR TOMBOL ---
+        const baseBtnStyle = {
+            background: 'linear-gradient(to right, #007bff, #00c6ff)', color: '#fff', border: 'none', borderRadius: '8px',
+            padding: '8px 16px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold', boxShadow: '0 4px 10px rgba(0, 0, 0, 0.1)',
+            transition: 'all 0.3s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', height: '38px', boxSizing: 'border-box'
+        };
+
+        // --- FUNGSI HELPER MEMBUAT TOMBOL ---
+        const createButton = (text) => {
+            const btn = document.createElement('button');
+            const img = document.createElement('img');
+            img.src = iconUrl;
+            img.style.cssText = "width: 18px; height: 18px; margin-right: 6px; vertical-align: middle;";
+            btn.appendChild(img);
+            btn.appendChild(document.createTextNode(text));
+            return btn;
+        };
+
+        // ============================================================
+        // LOGIKA PENEMPATAN TOMBOL BERDASARKAN HALAMAN
+        // ============================================================
+
+        // --- A. HALAMAN DOKUMEN (REGISTRATION PORTAL) ---
+        if (isBupotPage) {
+            // 1. Tombol Download Bupot
+            const bupotBtn = createButton(" Download Bupot");
+            bupotBtn.className = 'p-button p-component p-button-sm mr-2 p-button-info';
+            Object.assign(bupotBtn.style, baseBtnStyle);
+            bupotBtn.addEventListener("click", () => this.initiateDownload());
+            wrapper.appendChild(bupotBtn);
+
+            // 2. Tombol Smart Select (Global)
+            const smartSelectBtn = createButton(" Smart Select");
+            smartSelectBtn.innerHTML = `<span style="font-size:14px; margin-right:5px;">✅</span> Smart Select`; 
+            smartSelectBtn.className = 'custom-smart-select-btn p-button p-component p-button-sm mr-2';
+            Object.assign(smartSelectBtn.style, baseBtnStyle);
+            smartSelectBtn.style.background = 'linear-gradient(to right, #17a2b8, #138496)'; 
+            smartSelectBtn.addEventListener("click", (e) => this.showSmartSelectMenu(e)); 
+            wrapper.appendChild(smartSelectBtn);
+
+            // 4. Tombol Rename PDF
+            const renameBtn = createButton(" Rename PDF");
+            renameBtn.className = 'custom-rename-btn p-button p-component p-button-sm mr-2 p-button-warning';
+            Object.assign(renameBtn.style, baseBtnStyle);
+            renameBtn.style.background = 'linear-gradient(to right, #ff9800, #f57c00)';
+            renameBtn.addEventListener("click", () => this.initiateRenameProcess());
+            wrapper.appendChild(renameBtn);
+
+            // 5. Note Copy Text
+            const note = document.createElement('span');
+            note.style.cssText = 'font-size: 12px; color: #555; max-width: 700px; margin-left: 10px;';
+            const b1 = document.createElement('b'); b1.style.color = 'blue'; b1.textContent = 'Bukti Potong PPh Unifikasi (BPPU)';
+            const b2 = document.createElement('b'); b2.style.color = 'blue'; b2.textContent = 'Jenis Dokumen';
+            const copyBtn = document.createElement('button');
+            copyBtn.textContent = '📋 Copy';
+            Object.assign(copyBtn.style, {
+                marginLeft: '5px', padding: '2px 5px', fontSize: '10px', cursor: 'pointer',
+                border: '1px solid #ccc', borderRadius: '3px', backgroundColor: '#f0f0f0', color: '#333'
+            });
+            copyBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                navigator.clipboard.writeText(b1.textContent).then(() => {
+                    const originalText = copyBtn.textContent;
+                    copyBtn.textContent = '✅ Copied!';
+                    setTimeout(() => { copyBtn.textContent = originalText; }, 1500);
+                }).catch(err => { console.error('Gagal menyalin teks: ', err); });
+            });
+            note.append('(Copy text "', b1, copyBtn, '" ke kolom filter "', b2, '" dan ↻ Refresh)');
+            wrapper.appendChild(note);
+        
+        } 
+        // --- B. HALAMAN FAKTUR (OUTPUT/INPUT/BUPOT ISSUED/RETUR) ---
+        else {
+            // 1. Tombol Download PDF
+            const pdfBtn = createButton(" Download PDF");
+            pdfBtn.className = 'custom-download-btn p-button p-component p-button-sm mr-2 p-button-info';
+            Object.assign(pdfBtn.style, baseBtnStyle);
+            pdfBtn.addEventListener("click", () => this.initiateDownload());
+            wrapper.appendChild(pdfBtn);
+            
+            // 7. Tombol Rename PDF
+            const renameBtn = createButton(" Rename PDF");
+            renameBtn.className = 'custom-rename-btn p-button p-component p-button-sm mr-2 p-button-warning';
+            Object.assign(renameBtn.style, baseBtnStyle);
+            renameBtn.style.background = 'linear-gradient(to right, #ff9800, #f57c00)';
+            renameBtn.addEventListener("click", () => this.initiateRenameProcess());
+            wrapper.appendChild(renameBtn);
+
+            // 2. Tombol Smart Select
+            const smartSelectBtn = createButton(" Smart Select");
+            smartSelectBtn.innerHTML = `<span style="font-size:14px; margin-right:5px;">✅</span> Smart Select`;
+            smartSelectBtn.className = 'custom-smart-select-btn p-button p-component p-button-sm mr-2';
+            Object.assign(smartSelectBtn.style, baseBtnStyle);
+            smartSelectBtn.style.background = 'linear-gradient(to right, #17a2b8, #138496)'; 
+            smartSelectBtn.addEventListener("click", (e) => this.showSmartSelectMenu(e)); 
+            wrapper.appendChild(smartSelectBtn);
+            
+            // --- TOMBOL LIMIT BARIS (BARU) ---
+            const limitBtn = createButton(" Limit Baris");
+            limitBtn.innerHTML = `<span style="font-size:14px; margin-right:5px;">🔢</span> Limit`;
+            limitBtn.className = 'custom-limit-btn p-button p-component p-button-sm mr-2';
+            Object.assign(limitBtn.style, baseBtnStyle);
+            limitBtn.style.background = 'linear-gradient(to right, #6c757d, #495057)'; // Warna Abu-abu
+            limitBtn.addEventListener("click", (e) => this.showRowLimitMenu(e)); 
+            wrapper.appendChild(limitBtn);
+            
+
+            if (isOutputTaxPage || isInputTaxPage || isBupotIssuedPage || isInputReturnPage) {
+                
+                if (isOutputTaxPage || isInputTaxPage) {
+                    
+                    // 4. Tombol Buat Rekap (Excel)
+                    const excelBtn = document.createElement('button');
+                    const excelImg = document.createElement('img');
+                    excelImg.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' width='18' height='18' fill='white'%3E%3Cpath d='M22,16V4A2,2 0 0,0 20,2H8A2,2 0 0,0 6,4V16A2,2 0 0,0 8,18H20A2,2 0 0,0 22,16M11,10.5L12.5,14H11L9.5,10.5L8,14H6.5L8,10.5L6.5,7H8L9.5,10.5L11,7H12.5M19,14H14.5V12.5H19V14M19,10.5H14.5V9H19V10.5M19,7H14.5V5.5H19V7M4,6H2V20A2,2 0 0,0 4,22H18V20H4V6Z'/%3E%3C/svg%3E";
+                    excelImg.style.cssText = "margin-right: 6px; vertical-align: middle;";
+                    excelBtn.appendChild(excelImg);
+                    excelBtn.appendChild(document.createTextNode(" Buat Rekap"));
+                    excelBtn.className = 'custom-excel-btn p-button p-component p-button-sm mr-2 p-button-info';
+                    Object.assign(excelBtn.style, baseBtnStyle);
+                    excelBtn.style.background = 'linear-gradient(to right, #218838, #28a745)';
+                    excelBtn.addEventListener("click", () => this.openRekapPage());
+                    wrapper.appendChild(excelBtn);
+
+                
+                    // 6. Tombol Copy Excel
+                    const copyBtn = document.createElement('button');
+                    const copyIcon = document.createElement('span');
+                    copyIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 6px;"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
+                    copyBtn.appendChild(copyIcon);
+                    copyBtn.appendChild(document.createTextNode(" Copy Excel"));
+                    copyBtn.className = 'custom-copy-btn p-button p-component p-button-sm mr-2';
+                    copyBtn.title = "Copy data terpilih ke Clipboard (Paste di Excel)";
+                    Object.assign(copyBtn.style, baseBtnStyle);
+                    copyBtn.style.background = 'linear-gradient(to right, #6610f2, #520dc2)'; 
+                    copyBtn.addEventListener("click", () => this.copyTableToClipboard());
+                    wrapper.appendChild(copyBtn);
+         
+                }     
+            
+                // 9. Tombol Donasi & Filter Pencarian
+                if (isOutputTaxPage || isInputTaxPage) {
+                    const donasiBtn = document.createElement('a');
+                    donasiBtn.className = 'custom-donasi-btn p-button p-component p-button-sm mr-2';
+                    Object.assign(donasiBtn.style, baseBtnStyle);
+                    donasiBtn.href = 'https://script.google.com/macros/s/AKfycbwRhCMVf7rmevccd59ObxnauzmcBVBnN7M42ky9k6dmRFjYzbw7WRJRTt0g-vSfTJPQ7w/exec';
+                    donasiBtn.target = '_blank';
+                    donasiBtn.rel = 'noopener noreferrer';
+                    donasiBtn.style.textDecoration = 'none';
+                    donasiBtn.textContent = '💖 Donasi';
+                    donasiBtn.style.background = 'linear-gradient(to right, #e91e63, #c2185b)';
+                    wrapper.appendChild(donasiBtn);
+                    
+                    // Filter Container
+                    const filterContainer = document.createElement('div');
+                    Object.assign(filterContainer.style, {
+                        display: 'flex', alignItems: 'center', marginLeft: '15px', border: '1px solid #ccc',
+                        borderRadius: '8px', backgroundColor: '#fff', boxShadow: '0 2px 4px rgba(0, 0, 0, 0.05)'
+                    });
+                    const searchIcon = document.createElement('span');
+                    searchIcon.textContent = '🔍';
+                    Object.assign(searchIcon.style, { paddingLeft: '10px', color: '#888', fontSize: '14px' });
+                    
+                    const filterInput = document.createElement('input');
+                    filterInput.id = 'custom-table-filter';
+                    filterInput.type = 'text';
+                    filterInput.placeholder = 'Ketik & Cari Data List Filter...'; 
+                    Object.assign(filterInput.style, {
+                        border: 'none', padding: '9px 10px', fontSize: '13px', borderRadius: '0',
+                        outline: 'none', width: '220px', backgroundColor: 'transparent'
+                    });
+                    
+                    const resetBtn = document.createElement('span');
+                    resetBtn.id = 'custom-table-filter-reset';
+                    resetBtn.textContent = '✖'; 
+                    Object.assign(resetBtn.style, {
+                        padding: '9px 12px', cursor: 'pointer', color: '#aaa', fontSize: '14px',
+                        display: 'none', borderLeft: '1px solid #eee'
+                    });
+                    resetBtn.addEventListener('mouseenter', () => resetBtn.style.color = '#333');
+                    resetBtn.addEventListener('mouseleave', () => resetBtn.style.color = '#aaa');
+
+                    filterInput.addEventListener('keyup', (e) => {
+                        const searchText = e.target.value;
+                        this.filterTableRows(searchText); 
+                        resetBtn.style.display = searchText ? 'block' : 'none';
+
+                        if (e.key === 'Enter') {
+                            this.triggerNativeServerSearch(searchText);
+                        }
+                    });
+
+                    resetBtn.addEventListener('click', () => {
+                        filterInput.value = ''; 
+                        this.filterTableRows(''); 
+                        this.triggerNativeServerSearch(''); 
+                        resetBtn.style.display = 'none'; 
+                    });
+                    
+                    filterContainer.appendChild(searchIcon);
+                    filterContainer.appendChild(filterInput);
+                    filterContainer.appendChild(resetBtn);
+                    wrapper.appendChild(filterContainer);
+                }
+            } 
+        }
+
+        // --- FINAL: Inject ke DOM ---
+        if (wrapper.children.length > 0) toolbar.appendChild(wrapper); 
+      }
+    }
+    
+	// --- FITUR BARU: MENU LIMIT BARIS ---
+   // --- FITUR BARU: MENU LIMIT BARIS ---
+showRowLimitMenu(e) {
+    const oldMenu = document.getElementById('hanim-limit-menu');
+    if(oldMenu) { oldMenu.remove(); return; }
+
+    const menu = document.createElement('div');
+    menu.id = 'hanim-limit-menu';
+    Object.assign(menu.style, {
+        position: 'fixed', top: (e.clientY + 15) + 'px', left: e.clientX + 'px',
+        background: 'white', border: '1px solid #ccc', borderRadius: '8px',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.15)', zIndex: '999999', padding: '10px',
+        minWidth: '200px', fontFamily: 'Segoe UI, sans-serif', display: 'flex', flexDirection: 'column', gap: '5px'
+    });
+
+    const title = document.createElement('div');
+    title.innerText = "Tampilkan per Halaman (Standar):";
+    title.style.cssText = "font-size:12px; color:#274DF5; margin-bottom:5px; font-weight:bold;";
+    menu.appendChild(title);
+
+    // Grid tombol angka standar
+    const btnGrid = document.createElement('div');
+    btnGrid.style.cssText = "display:grid; grid-template-columns: 1fr 1fr; gap: 5px;";
+
+    [10, 25, 50, 100, 250, 500].forEach(num => {
+        const btn = document.createElement('button');
+        btn.innerText = num;
+        Object.assign(btn.style, {
+            padding: '6px', border: '1px solid #ddd', background: '#f8f9fa',
+            cursor: 'pointer', borderRadius: '4px', fontSize: '13px'
+        });
+        btn.onmouseenter = () => btn.style.background = '#e2e6ea';
+        btn.onmouseleave = () => btn.style.background = '#f8f9fa';
+        btn.onclick = () => {
+            this.setRowLimit(num);
+            menu.remove();
+        };
+        btnGrid.appendChild(btn);
+    });
+    menu.appendChild(btnGrid);
+    
+    // Separator
+    const hr = document.createElement('div');
+    hr.style.cssText = "height:1px; background:#eee; margin:5px 0;";
+    menu.appendChild(hr);
+
+    // === [MODIFIKASI] INPUT MANUAL ===
+    const manualContainer = document.createElement('div');
+    // UBAH STYLE INI: Menghilangkan display: flex dan gap, menggunakan margin-top
+    manualContainer.style.cssText = "display: flex; flex-direction: column; gap: 5px; margin-top: 5px;"; 
+    
+    const manualTitle = document.createElement('div');
+    manualTitle.innerText = "Input Manual & Pilih 'Smart Select' untuk Checklist:";
+    // UBAH STYLE INI: Menghilangkan white-space:nowrap; dan flex-shrink: 0;
+    manualTitle.style.cssText = "font-size:12px; color:#F2070B; margin-bottom: 5px; font-weight:bold;"; 
+    
+    // Pindahkan Title ke bagian atas Manual Container
+    manualContainer.appendChild(manualTitle); 
+    
+    // Container baru untuk Input dan Tombol
+    const inputBtnWrapper = document.createElement('div');
+    inputBtnWrapper.style.cssText = "display: flex; gap: 5px; align-items: center;";
+    
+    const manualInput = document.createElement('input');
+    manualInput.type = 'number';
+    manualInput.id = 'manual-row-limit';
+    manualInput.min = '1';
+    manualInput.max = '500'; // Batas maksimal 500 baris
+    manualInput.placeholder = 'Cth: 26';
+    Object.assign(manualInput.style, {
+        padding: '6px', border: '1px solid #ddd', borderRadius: '4px',
+        width: '80px', fontSize: '13px', textAlign: 'center'
+    });
+    // inputBtnWrapper.appendChild(manualInput); // Pindahkan append ke wrapper baru
+
+    const manualBtn = document.createElement('button');
+    manualBtn.innerText = 'Terapkan';
+    Object.assign(manualBtn.style, {
+        padding: '6px 10px', border: 'none', background: '#dc3545', color: 'white',
+        cursor: 'pointer', borderRadius: '4px', fontSize: '13px', flexGrow: '1' // Tambahkan flexGrow agar tombol memanjang
+    });
+    manualBtn.onmouseenter = () => manualBtn.style.background = '#c82333';
+    manualBtn.onmouseleave = () => manualBtn.style.background = '#dc3545';
+    manualBtn.onclick = () => {
+        const val = parseInt(manualInput.value);
+        if (val && val >= 1 && val <= 500) { 
+            this.setRowLimit(val);
+            menu.remove();
+        } else {
+            this.displayAlertPopup("Masukkan angka yang valid (1-500).");
+        }
+    };
+    
+    // Susun Input dan Tombol ke dalam Wrapper
+    inputBtnWrapper.appendChild(manualInput);
+    inputBtnWrapper.appendChild(manualBtn);
+    
+    // Tambahkan Wrapper ke Manual Container
+    manualContainer.appendChild(inputBtnWrapper);
+    
+    // Tambahkan Manual Container ke Menu
+    menu.appendChild(manualContainer); 
+    // === END OF MODIFIKASI ===
+
+    document.body.appendChild(menu);
+
+    // Timeout untuk memastikan menu ditempatkan dengan benar sebelum menambahkan listener
+    setTimeout(() => {
+        const closeMenu = (ev) => { 
+            if(ev.target !== menu && !menu.contains(ev.target) && ev.target !== e.target) {
+                menu.remove();
+                document.removeEventListener('click', closeMenu);
+            } 
+        };
+        document.addEventListener('click', closeMenu);
+    }, 100);
+}
+    // Helper untuk mencari batas standar terdekat yang lebih besar
+    findActualLimit(value) {
+        const standardLimits = [10, 25, 50, 100, 250, 500];
+        // Cari batas standar terdekat yang lebih besar atau sama
+        let actualLimit = standardLimits.find(limit => limit >= value);
+        // Jika value > 500, kembalikan 500
+        return actualLimit || 500; 
+    }
+
+// --- [MODIFIKASI] FUNGSI LOGIKA: UBAH LIMIT BARIS ---
+  // --- Helper untuk mencari batas standar terdekat yang lebih besar ---
+findActualLimit(value) {
+    const standardLimits = [10, 25, 50, 100, 250, 500];
+    // Cari batas standar terdekat yang lebih besar atau sama
+    let actualLimit = standardLimits.find(limit => limit >= value);
+    // Jika value > 500, kembalikan 500
+    return actualLimit || 500; 
+}
+
+// --- [MODIFIKASI] FUNGSI LOGIKA: UBAH LIMIT BARIS ---
+setRowLimit(value) {
+    console.log(`Mencoba mengubah limit baris ke: ${value}`);
+
+    const standardLimits = [10, 25, 50, 100, 250, 500];
+    let actualLimit = value;
+    let isCustomLimit = false;
+
+    if (!standardLimits.includes(value)) {
+        isCustomLimit = true;
+        actualLimit = this.findActualLimit(value);
+        console.log(`Nilai manual (${value}) terdeteksi. Menggunakan limit standar: ${actualLimit}`);
+    }
+
+    // 1. Cari elemen Dropdown Paginator
+    const dropdown = document.querySelector('.p-paginator-rpp-options, .p-paginator .p-dropdown'); 
+    if (!dropdown) {
+        this.displayAlertPopup("Gagal menemukan Dropdown Limit Baris di halaman ini."); 
+        return;
+    } 
+
+    // --- LOGIKA UTAMA PENGUBAHAN LIMIT ---
+    try {
+        // Cek apakah nilai Dropdown saat ini sudah sesuai dengan actualLimit
+        if (parseInt(dropdown.querySelector('.p-dropdown-label').innerText.trim()) !== actualLimit) {
+            // Hanya klik jika nilainya berbeda
+            dropdown.click(); // Buka dropdown 
+
+            setTimeout(() => { 
+                const items = document.querySelectorAll('.p-dropdown-item, li[role="option"]'); 
+                let found = false;
+                
+                // Cari angka yang sesuai dan klik
+                items.forEach(item => { 
+                    if (item.innerText.trim() == actualLimit) {
+                        item.click();
+                        found = true;
+                    }
+                });
+
+                // --- Opsi Input Manual (Jika angka tidak ada di list) --- 
+                if (!found) {
+                    console.log("Angka tidak ada di list standar. Mencoba teknik injeksi..."); 
+                    const hiddenSelect = dropdown.querySelector('select'); 
+                    if (hiddenSelect) {
+                        let option = hiddenSelect.querySelector(`option[value="${actualLimit}"]`); 
+                        if (!option) {
+                            option = document.createElement('option'); 
+                            option.value = actualLimit; 
+                            option.text = actualLimit; 
+                            hiddenSelect.add(option); 
+                        }
+                        hiddenSelect.value = actualLimit; 
+                        hiddenSelect.dispatchEvent(new Event('change', { bubbles: true })); 
+                    }
+                }
+                
+                // Setelah selesai mengubah nilai Paginator, jalankan filter baris.
+                // Tambahkan sedikit jeda agar proses Paginator selesai
+                setTimeout(() => this.applyCustomRowDisplayLimit(value, isCustomLimit), 500); 
+
+            }, 100); // Jeda singkat agar dropdown terbuka
+        } else {
+             // Jika limit sudah sama dengan actualLimit, langsung terapkan filter baris.
+             this.applyCustomRowDisplayLimit(value, isCustomLimit);
+        }
+
+    } catch (e) {
+        console.error("Gagal mengatur limit baris:", e);
+        this.displayAlertPopup("Terjadi kesalahan saat mengatur limit baris.");
+    }
+}
+
+
+// --- [FUNGSI BARU] BATASI JUMLAH BARIS TAMPILAN (Filter Lokal) ---
+applyCustomRowDisplayLimit(requestedLimit, isCustom) {
+    // Batas final adalah requestedLimit, maksimal 500
+    const finalLimit = Math.min(requestedLimit, 500); 
+
+    // Cari baris data di tbody
+    // const rows = document.querySelectorAll('.p-datatable-tbody tr'); // Ini tidak dipakai lagi, ganti dengan currentRows di dalam timeout
+
+    // Reset display filter tabel yang mungkin sudah diterapkan sebelumnya
+    this.filterTableRows(''); 
+
+    // Tunggu hingga tabel selesai me-render baris yang baru (berdasarkan actualLimit)
+    setTimeout(() => {
+        const currentRows = document.querySelectorAll('.p-datatable-tbody tr');
+        let displayedCount = 0; // Reset counter
+
+        currentRows.forEach((row, index) => {
+            // Abaikan baris kosong (jika ada pesan "No records found")
+            if (row.classList.contains('p-datatable-emptymessage')) {
+                row.style.display = '';
+                return;
+            }
+
+            if (isCustom) {
+                if (index < finalLimit) {
+                    row.style.display = ''; // Tampilkan
+                    displayedCount++;
+                } else {
+                    row.style.display = 'none'; // Sembunyikan jika melebihi limit manual
+                }
+            } else {
+                // Jika memilih limit standar (10, 25, 50, dll.)
+                // Pastikan semua baris yang dimuat oleh paginator terlihat (reset filter lokal)
+                row.style.display = ''; 
+                displayedCount++;
+            }
+        });
+        
+        // --- BLOK INI TELAH DIHAPUS/DINONAKTIFKAN UNTUK MENGHILANGKAN POPUP SUKSES ---
+        /*
+        if (isCustom && finalLimit > 0) {
+            const actualLimitSet = this.findActualLimit(finalLimit);
+            this.displayAlertPopup(`✅ Tampil ${finalLimit} baris. Paginator disetel ke ${actualLimitSet}.`);
+        } else if (!isCustom) {
+            this.displayAlertPopup(`✅ Limit baris disetel ke ${finalLimit}.`);
+        }
+        */
+        
+        // Jika Anda masih ingin notifikasi tanpa popup, gunakan console log:
+        if (isCustom && finalLimit > 0) {
+            const actualLimitSet = this.findActualLimit(finalLimit);
+            console.log(`[Limit Baris] Tampil ${finalLimit} baris. Paginator disetel ke ${actualLimitSet}.`);
+        } else if (!isCustom) {
+            console.log(`[Limit Baris] Disetel ke ${finalLimit} (Standar).`);
+        }
+
+    }, isCustom ? 1000 : 500); // Jeda lebih lama untuk custom limit agar render paginator selesai
+}
+
+	
+	 // --- [BARU] FUNGSI COPY CLIPBOARD ---
+    // --- [UPDATE] COPY CLIPBOARD DENGAN FORMAT TEXT KHUSUS EXCEL ---
+    async copyTableToClipboard() {
+        const data = await this.extractTableData();
+        if (!data || data.selectedData.length <= 1) {
+            this.displayAlertPopup("Tidak ada data yang dipilih untuk disalin.");
+            return;
+        }
+
+        try {
+            // 1. Definisikan Header yang Wajib jadi TEXT
+            const forceTextHeaders = [
+                "Referensi", 
+                "No_Pajak", 
+                "NPWP_Pembeli", 
+                "NPWP_Penjual", 
+                "Nama_Pembeli", 
+                "Nama_Penjual"
+            ];
+
+            // 2. Bangun Tabel HTML untuk Clipboard (Agar dikenali Excel)
+            // mso-number-format:"\@" adalah kode ajaib agar Excel membacanya sebagai TEXT
+            let html = '<table border="1">';
+            
+            data.selectedData.forEach((row, rowIndex) => {
+                html += '<tr>';
+                row.forEach((cell, colIndex) => {
+                    let style = '';
+                    const headerName = data.selectedData[0][colIndex]; // Ambil nama header kolom ini
+                    
+                    // Jika header termasuk dalam daftar wajib text, tambahkan style khusus
+                    if (forceTextHeaders.includes(headerName)) {
+                        style = 'style="mso-number-format:\'\@\'"'; 
+                    }
+                    
+                    // Pastikan cell tidak null/undefined
+                    const safeCell = (cell === null || cell === undefined) ? '' : cell;
+                    html += `<td ${style}>${safeCell}</td>`;
+                });
+                html += '</tr>';
+            });
+            html += '</table>';
+
+            // 3. Bangun Versi Plain Text (Fallback untuk Notepad dll)
+            let tsv = data.selectedData.map(row => 
+                row.map(field => String(field).replace(/\t/g, " ").replace(/\n/g, " ")).join("\t")
+            ).join("\n");
+
+            // 4. Tulis ke Clipboard (Blob HTML + Text)
+            const blobHtml = new Blob([html], { type: 'text/html' });
+            const blobText = new Blob([tsv], { type: 'text/plain' });
+            
+            const clipboardItem = new ClipboardItem({
+                'text/html': blobHtml,
+                'text/plain': blobText
+            });
+
+            await navigator.clipboard.write([clipboardItem]);
+
+            // Feedback Visual
+            const btn = document.querySelector('button[title*="Copy data"], .custom-copy-btn');
+            if (btn) {
+                const originalHTML = btn.innerHTML;
+                btn.innerHTML = `<span style="margin-right:6px;">✅</span>Copied!`;
+                setTimeout(() => btn.innerHTML = originalHTML, 2000);
+            }
+            this.displayAlertPopup("✅ Buka lembar file Excel dan tekan (Ctrl +V) pada keyboard");
+
+        } catch (err) {
+            console.error('Gagal menyalin format Excel: ', err);
+            // Fallback ke cara lama jika Browser tidak mendukung ClipboardItem
+            this.fallbackCopyText(data.selectedData);
+        }
+    }
+
+    // Fungsi cadangan jika cara HTML gagal
+    fallbackCopyText(selectedData) {
+        let tsvContent = "";
+        selectedData.forEach(row => {
+            const rowStr = row.map(field => String(field).replace(/\t/g, " ").replace(/\n/g, " ")).join("\t");
+            tsvContent += rowStr + "\n";
+        });
+        navigator.clipboard.writeText(tsvContent).then(() => {
+             this.displayAlertPopup("✅ Data disalin (Mode Text Biasa).");
+        });
+    }
+	
+	// --- [UPDATE] FITUR 1: SMART SELECT MENU ---
+// --- [UPDATE] FITUR 1: SMART SELECT MENU (DITAMBAHKAN FILTER MASA PAJAK) ---
+showSmartSelectMenu(e) {
+    const oldMenu = document.getElementById('hanim-smart-menu');
+    if(oldMenu) { oldMenu.remove(); return; }
+
+    const menu = document.createElement('div');
+    menu.id = 'hanim-smart-menu';
+    Object.assign(menu.style, {
+        position: 'fixed', top: (e.clientY + 15) + 'px', left: e.clientX + 'px',
+        background: 'white', border: '1px solid #ccc', borderRadius: '8px',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.15)', zIndex: '999999', padding: '8px 0',
+        minWidth: '240px', fontFamily: 'Segoe UI, sans-serif'
+    });
+
+    const createItem = (text, icon, action, isBold = false) => {
+        const item = document.createElement('div');
+        item.innerHTML = `<span style="width:24px; display:inline-block; text-align:center;">${icon}</span> ${text}`;
+        Object.assign(item.style, {
+            padding: '10px 15px', cursor: 'pointer', fontSize: '13px', color: '#333',
+            transition: 'background 0.2s', display: 'flex', alignItems: 'center',
+            fontWeight: isBold ? '600' : 'normal'
+        });
+        item.onmouseenter = () => item.style.background = '#f8f9fa';
+        item.onmouseleave = () => item.style.background = 'white';
+        item.onclick = (ev) => {
+            ev.stopPropagation(); 
+            action();
+            menu.remove();
+        };
+        return item;
+    };
+
+    // --- MENU ITEMS ---
+    menu.appendChild(createItem("Pilih Semua (Tampil)", "✅", () => {
+        document.querySelectorAll('.p-datatable-tbody tr:not([style*="display: none"]) input[type="checkbox"]').forEach(cb => { if(!cb.checked) cb.click(); });
+        setTimeout(() => this.calculateTotals(), 200);
+    }));
+
+    menu.appendChild(createItem("Balikkan Pilihan (Invert)", "🔄", () => {
+        document.querySelectorAll('.p-datatable-tbody tr:not([style*="display: none"]) input[type="checkbox"]').forEach(cb => cb.click());
+        setTimeout(() => this.calculateTotals(), 200);
+    }));
+
+    menu.appendChild(createItem("Hapus Semua Pilihan", "❌", () => {
+        document.querySelectorAll('.p-datatable-tbody tr input[type="checkbox"]').forEach(cb => { if(cb.checked) cb.click(); });
+        setTimeout(() => this.calculateTotals(), 200);
+    }));
+
+    // Separator
+    const hr = document.createElement('div'); hr.style.cssText = "height:1px; background:#eee; margin:5px 0;"; menu.appendChild(hr);
+// --- MENU FILTER ---
+    
+    // 1. Filter Status
+    menu.appendChild(createItem("Filter Status...", "🔍", () => {
+        this.showStatusFilterPopup(); 
+    }, true));
+
+    // 2. [BARU] Filter Masa Pajak
+    menu.appendChild(createItem("Filter Masa Pajak...", "📅", () => {
+        this.showMasaPajakFilterPopup(); // <--- Panggil fungsi baru
+    }, true));
+
+    // Reset Semua Filter
+    menu.appendChild(createItem("Reset Semua Filter", "👁️", () => {
+        this.applyCustomStatusFilter(""); // Reset Status
+        this.applyMasaPajakFilter([]);   // Reset Masa (Kirim array kosong = reset)
+    }));
+    
+    // =========================================================================
+    // <<< BLOK KODE BARU DIMULAI DI SINI >>>
+    // =========================================================================
+    
+    // --- MENU AKSI TAMBAHAN ---
+    const hr2 = document.createElement('div'); hr2.style.cssText = "height:1px; background:#eee; margin:5px 0;"; menu.appendChild(hr2);
+
+    // [BARU] Tombol Cek Duplikat
+    menu.appendChild(createItem("Cek Duplikat No Referensi", "🔍", () => {
+    this.handleDuplicateCheck(); // Memanggil fungsi yang sudah diperbaiki
+}));
+
+    // [BARU] Tombol Extrak CSV
+    menu.appendChild(createItem("Extrak CSV (Terpilih)", "📄", () => {
+        this.exportToCSV(); 
+    }));
+
+    // [BARU] Tombol Status Color
+    menu.appendChild(createItem("Status Color", "🎨", () => {
+        this.applyStatusColoring(); 
+    }));
+
+    // Separator
+    const hr3 = document.createElement('div'); hr3.style.cssText = "height:1px; background:#eee; margin:5px 0;"; menu.appendChild(hr3); 
+    
+    document.body.appendChild(menu);
+// ... Lanjutan fungsi
+
+
+    setTimeout(() => {
+        const closeMenu = (ev) => {
+            if(ev.target !== menu && !menu.contains(ev.target) && ev.target !== e.target) {
+                menu.remove();
+                document.removeEventListener('click', closeMenu);
+            }
+        };
+        document.addEventListener('click', closeMenu);
+    }, 100);
+}
+
+
+// --- [UPDATE] POPUP MASA PAJAK (VERSI RINGKAS: HANYA SERVER LOAD) ---
+showMasaPajakFilterPopup() {
+    const oldPopup = document.getElementById('hanim-masa-popup');
+    if (oldPopup) oldPopup.remove();
+
+    const months = [
+        "Januari", "Februari", "Maret", "April", "Mei", "Juni", 
+        "Juli", "Agustus", "September", "Oktober", "November", "Desember"
+    ];
+
+    // 1. Buat Overlay
+    const overlay = document.createElement('div');
+    overlay.id = 'hanim-masa-popup';
+    Object.assign(overlay.style, {
+        position: 'fixed', top: '0', left: '0', width: '100%', height: '100%',
+        backgroundColor: 'rgba(0, 0, 0, 0.5)', zIndex: '20000',
+        display: 'flex', justifyContent: 'center', alignItems: 'center', backdropFilter: 'blur(2px)'
+    });
+
+    // 2. Buat Kotak Konten
+    const content = document.createElement('div');
+    Object.assign(content.style, {
+        background: 'white', padding: '20px', borderRadius: '12px',
+        boxShadow: '0 10px 25px rgba(0,0,0,0.2)', width: '90%', maxWidth: '350px', // Lebar diperkecil biar rapi
+        fontFamily: 'Segoe UI, sans-serif', display: 'flex', flexDirection: 'column'
+    });
+
+    // 3. Isi HTML (Hanya Dropdown & Tombol Muat)
+    content.innerHTML = `
+        <h3 style="margin:0 0 15px 0; color:#333; text-align:center;">📅 Ganti Masa Pajak</h3>
+        
+        <div style="font-size:13px; color:#555; margin-bottom:8px;">Pilih bulan untuk memuat data baru:</div>
+        
+        <div style="display:flex; flex-direction:column; gap:10px;">
+            <select id="server-month-select" style="padding:10px; borderRadius:6px; border:1px solid #ccc; font-size:14px;">
+                <option value="">-- Pilih Bulan --</option>
+                ${months.map(m => `<option value="${m}">${m}</option>`).join('')}
+            </select>
+            
+            <button id="btn-load-server" style="background:#007bff; color:white; border:none; padding:10px; borderRadius:6px; cursor:pointer; font-weight:bold; font-size:14px; margin-top:5px; transition:background 0.2s;">
+                🔄 Muat Data
+            </button>
+        </div>
+    `;
+
+    // 4. Tombol Batal (Di bawah)
+    const btnCancel = document.createElement('button');
+    btnCancel.innerText = 'Batal';
+    Object.assign(btnCancel.style, {
+        marginTop: '15px', padding: '8px', border: 'none', background: 'transparent', 
+        color: '#888', cursor: 'pointer', fontSize: '12px', textDecoration: 'underline'
+    });
+    btnCancel.onclick = () => overlay.remove();
+    
+    // Hover effect untuk tombol Muat
+    setTimeout(() => {
+        const btnLoad = document.getElementById('btn-load-server');
+        if(btnLoad) {
+            btnLoad.onmouseenter = () => btnLoad.style.background = '#0056b3';
+            btnLoad.onmouseleave = () => btnLoad.style.background = '#007bff';
+        }
+    }, 50);
+
+    content.appendChild(btnCancel);
+    overlay.appendChild(content);
+    document.body.appendChild(overlay);
+
+    // 5. Logic Tombol "Muat Data"
+    setTimeout(() => {
+        const btnLoad = document.getElementById('btn-load-server');
+        const selectMonth = document.getElementById('server-month-select');
+        
+        if(btnLoad && selectMonth) {
+            btnLoad.onclick = () => {
+                const val = selectMonth.value;
+                if(val) {
+                    this.triggerServerMasaPajakChange(val); // Memanggil fungsi ganti server
+                    overlay.remove();
+                } else {
+                    alert("Silakan pilih bulan terlebih dahulu.");
+                }
+            };
+        }
+    }, 100);
+    
+    // Tutup jika klik area gelap
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+}
+
+// --- LOGIKA FILTER MASA PAJAK ---
+applyMasaPajakFilter(selectedMonths) {
+    const rows = document.querySelectorAll('.p-datatable-tbody tr');
+    if (rows.length === 0) return;
+
+    // Jika array kosong atau null, anggap RESET (Tampilkan Semua)
+    if (!selectedMonths || selectedMonths.length === 0) {
+        rows.forEach(row => row.style.display = '');
+        this.displayAlertPopup("👁️ Semua Masa Pajak ditampilkan kembali.");
+        return;
+    }
+
+    // 1. Cari Index Kolom "Masa Pajak"
+    let masaIndex = -1;
+    const headers = document.querySelectorAll('.p-datatable-thead th');
+    
+    headers.forEach((th, idx) => {
+        const text = th.innerText.toLowerCase().trim();
+        if (text.includes('masa pajak') || text.includes('masa')) {
+            masaIndex = idx;
+        }
+    });
+
+    if (masaIndex === -1) {
+        this.displayAlertPopup("Gagal menemukan kolom 'Masa Pajak'.");
+        return;
+    }
+
+    // 2. Lakukan Filtering
+    let matchCount = 0;
+    
+    // Normalisasi input user (lowercase biar aman)
+    const filters = selectedMonths.map(m => m.toLowerCase());
+
+    rows.forEach(row => {
+        if (row.classList.contains('p-datatable-emptymessage') || !row.querySelector('td')) return;
+
+        const cells = row.querySelectorAll('td');
+        if (cells[masaIndex]) {
+            const cellText = cells[masaIndex].innerText.toLowerCase().trim();
+            
+            // Cek apakah teks di sel (misal: "november") ada di daftar filter
+            // Menggunakan includes untuk mencakup kasus seperti "Masa Pajak: November" (jika ada prefix)
+            const isMatch = filters.some(filterMonth => cellText.includes(filterMonth));
+
+            if (isMatch) {
+                row.style.display = ''; 
+                matchCount++;
+            } else {
+                row.style.display = 'none'; 
+            }
+        }
+    });
+
+    this.displayAlertPopup(`✅ Filter diterapkan.\nMenampilkan ${matchCount} data Masa: ${selectedMonths.join(', ')}`);
+}
+
+// --- [FIXED & TESTED] FUNGSI GANTI MASA PAJAK (KLIK ITEM LANGSUNG) ---
+    triggerServerMasaPajakChange(bulanTujuan) {
+        console.log(`System: Mencoba mengganti Masa Pajak Server ke: ${bulanTujuan}`);
+        
+        // 1. Cari Header Kolom "Masa Pajak"
+        const headers = Array.from(document.querySelectorAll('.p-datatable-thead th'));
+        const targetHeader = headers.find(th => th.innerText.trim().toLowerCase().includes('masa pajak'));
+
+        if (!targetHeader) {
+            console.warn("Header Masa Pajak tidak ditemukan.");
+            return; 
+        }
+
+        const index = headers.indexOf(targetHeader);
+        const filterRow = document.querySelector('.p-datatable-thead tr:nth-child(2)');
+        if (!filterRow) return;
+
+        const filterCell = filterRow.children[index];
+        const dropdown = filterCell.querySelector('.p-dropdown');
+        const clearButton = filterCell.querySelector('.p-column-filter-clear-button, .pi-times');
+
+        // Reset dulu jika ada isinya
+        if (clearButton) clearButton.click();
+
+        setTimeout(() => {
+            if (dropdown) {
+                // A. Klik Dropdown untuk membuka
+                dropdown.click(); 
+
+                // B. Tunggu Panel Muncul
+                setTimeout(() => {
+                    // Cari panel yang sedang terbuka (visible)
+                    const panel = document.querySelector('.p-dropdown-panel:not([style*="display: none"])');
+                    if (!panel) return;
+
+                    // C. Isi Kotak Pencarian
+                    const searchInput = panel.querySelector('.p-dropdown-filter');
+                    if (searchInput) {
+                        searchInput.value = bulanTujuan;
+                        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        
+                        // D. TUNGGU HASIL FILTER MUNCUL (PENTING!)
+                        setTimeout(() => {
+                            // Cari item list (li) yang terlihat
+                            const items = panel.querySelectorAll('.p-dropdown-item');
+                            let targetItem = null;
+
+                            // Coba cari yang teksnya persis sama dulu
+                            for (let item of items) {
+                                if (item.innerText.trim().toLowerCase() === bulanTujuan.toLowerCase()) {
+                                    targetItem = item;
+                                    break;
+                                }
+                            }
+
+                            // Jika tidak ketemu yang persis, ambil item pertama yang muncul (Fallback)
+                            if (!targetItem && items.length > 0) {
+                                targetItem = items[0];
+                            }
+
+                            // E. EKSEKUSI KLIK PADA ITEM (Bukan Enter pada input)
+                            if (targetItem) {
+                                console.log(`Mengklik item bulan: ${targetItem.innerText}`);
+                                targetItem.click();
+                            } else {
+                                console.warn("Item bulan tidak ditemukan di list dropdown.");
+                            }
+
+                        }, 400); // Beri waktu 400ms untuk list terfilter
+                    }
+                }, 300); // Beri waktu 300ms untuk panel terbuka
+            } else {
+                // Fallback untuk Input Text biasa (Bukan Dropdown)
+                const inputField = filterCell.querySelector('input');
+                if (inputField) {
+                    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                    setter.call(inputField, bulanTujuan);
+                    inputField.dispatchEvent(new Event('input', { bubbles: true }));
+                    inputField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+                }
+            }
+        }, 200); 
+    }
+	
+// --- FITUR BARU: POPUP PILIHAN STATUS ---
+showStatusFilterPopup() {
+    // Hapus popup lama jika ada
+    const oldPopup = document.getElementById('hanim-status-popup');
+    if (oldPopup) oldPopup.remove();
+
+    // 1. Daftar Status Lengkap (Sesuai Request)
+    const statusList = [
+        { val: "AMENDED", label: "AMENDED (Diganti/Direvisi)" },
+        { val: "APPROVED", label: "APPROVED (Disetujui/Sukses)" },
+        { val: "CANCELLED", label: "CANCELLED (Dibatalkan)" },
+        { val: "CREATED", label: "CREATED (Dibuat/Draft)" },
+        { val: "CREDITED", label: "CREDITED (Dikreditkan)" },
+        { val: "DELETED", label: "DELETED (Dihapus)" },
+        { val: "REPORTED", label: "REPORTED (Dilaporkan)" },
+        { val: "SAVED_INVALID", label: "SAVED_INVALID (Tidak Valid)" },
+        { val: "SIGNING_IN_PROGRESS", label: "SIGNING_IN_PROGRESS (Tanda Tangan)" },
+        { val: "UNCREDITED", label: "UNCREDITED (Tidak Dikreditkan)" },
+        { val: "WAITING_FOR_AMENDMENT", label: "WAITING_FOR_AMENDMENT" },
+        { val: "WAITING_FOR_CANCELLATION", label: "WAITING_FOR_CANCELLATION" }
+    ];
+
+    // 2. Buat Overlay Background
+    const overlay = document.createElement('div');
+    overlay.id = 'hanim-status-popup';
+    Object.assign(overlay.style, {
+        position: 'fixed', top: '0', left: '0', width: '100%', height: '100%',
+        backgroundColor: 'rgba(0, 0, 0, 0.5)', zIndex: '20000',
+        display: 'flex', justifyContent: 'center', alignItems: 'center', backdropFilter: 'blur(2px)'
+    });
+
+    // 3. Buat Kotak Konten
+    const content = document.createElement('div');
+    Object.assign(content.style, {
+        background: 'white', padding: '20px', borderRadius: '12px',
+        boxShadow: '0 10px 25px rgba(0,0,0,0.2)', width: '90%', maxWidth: '500px',
+        fontFamily: 'Segoe UI, sans-serif', maxHeight: '85vh', display: 'flex', flexDirection: 'column'
+    });
+
+    // Header
+    const header = document.createElement('div');
+    header.innerHTML = '<h3 style="margin:0 0 10px 0; color:#333;">🔍 Filter Status Faktur</h3><div style="font-size:12px; color:#666; margin-bottom:15px;">Centang status yang ingin ditampilkan:</div>';
+    content.appendChild(header);
+
+    // Container Checkbox (Scrollable)
+    const listContainer = document.createElement('div');
+    Object.assign(listContainer.style, {
+        overflowY: 'auto', flex: '1', border: '1px solid #eee', borderRadius: '6px', padding: '10px',
+        display: 'grid', gridTemplateColumns: '1fr', gap: '8px' // 1 Kolom agar teks panjang muat
+    });
+
+    // Generate Checkbox Items
+    statusList.forEach(item => {
+        const label = document.createElement('label');
+        Object.assign(label.style, {
+            display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer',
+            padding: '6px', borderRadius: '4px', transition: 'background 0.2s', fontSize: '13px'
+        });
+        label.onmouseenter = () => label.style.background = '#f8f9fa';
+        label.onmouseleave = () => label.style.background = 'white';
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = item.val;
+        cb.style.transform = 'scale(1.2)';
+
+        const text = document.createElement('span');
+        text.innerText = item.label;
+
+        // Pewarnaan Teks Sederhana agar mudah dibaca
+        if(item.val.includes('APPROVED')) text.style.color = '#28a745'; // Hijau
+        else if(item.val.includes('REJECT') || item.val.includes('CANCEL') || item.val.includes('DELETED')) text.style.color = '#dc3545'; // Merah
+        else if(item.val.includes('WAITING') || item.val.includes('CREATED')) text.style.color = '#d39e00'; // Kuning Gelap
+
+        label.appendChild(cb);
+        label.appendChild(text);
+        listContainer.appendChild(label);
+    });
+
+    content.appendChild(listContainer);
+
+    // Tombol Aksi
+    const btnGroup = document.createElement('div');
+    Object.assign(btnGroup.style, { display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '20px' });
+
+    const btnCancel = document.createElement('button');
+    btnCancel.innerText = 'Batal';
+    Object.assign(btnCancel.style, {
+        padding: '8px 16px', border: '1px solid #ccc', background: '#f8f9fa', borderRadius: '6px', cursor: 'pointer'
+    });
+    btnCancel.onclick = () => overlay.remove();
+
+    const btnReset = document.createElement('button');
+    btnReset.innerText = 'Reset (Tampil Semua)';
+    Object.assign(btnReset.style, {
+        padding: '8px 16px', border: 'none', background: '#17a2b8', color: 'white', borderRadius: '6px', cursor: 'pointer'
+    });
+    btnReset.onclick = () => {
+        this.applyCustomStatusFilter(""); 
+        overlay.remove();
+    };
+
+    const btnApply = document.createElement('button');
+    btnApply.innerText = 'Terapkan Filter';
+    Object.assign(btnApply.style, {
+        padding: '8px 20px', border: 'none', background: '#28a745', color: 'white', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold'
+    });
+    
+    // Logic saat tombol Terapkan diklik
+    btnApply.onclick = () => {
+        // Ambil semua nilai yang dicentang
+        const checkedValues = Array.from(listContainer.querySelectorAll('input[type="checkbox"]:checked'))
+                                   .map(cb => cb.value);
+        
+        if (checkedValues.length === 0) {
+            alert("Pilih setidaknya satu status, atau klik Reset.");
+            return;
+        }
+
+        // Gabungkan dengan koma (agar cocok dengan fungsi applyCustomStatusFilter yang sudah ada)
+        const filterString = checkedValues.join(',');
+        this.applyCustomStatusFilter(filterString);
+        overlay.remove();
+    };
+
+    btnGroup.appendChild(btnCancel);
+    btnGroup.appendChild(btnReset);
+    btnGroup.appendChild(btnApply);
+    content.appendChild(btnGroup);
+
+    overlay.appendChild(content);
+    document.body.appendChild(overlay);
+    
+    // Tutup jika klik area gelap
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) overlay.remove();
+    });
+}
+
+
+
+// --- FUNGSI BARU: FILTER STATUS MANUAL ---
+applyCustomStatusFilter(inputString) {
+    const rows = document.querySelectorAll('.p-datatable-tbody tr');
+    if (rows.length === 0) return;
+
+    // 1. Jika Input Kosong -> Reset (Tampilkan Semua)
+    if (!inputString || inputString.trim() === "") {
+        rows.forEach(row => row.style.display = '');
+        this.displayAlertPopup("👁️ Semua data ditampilkan kembali.");
+        return;
+    }
+
+    // 2. Parse Input User (Split koma, bersihkan spasi, lowercase)
+    // Contoh input: "Approved, reject " -> ['approved', 'reject']
+    const keywords = inputString.split(',').map(s => s.trim().toLowerCase()).filter(s => s);
+
+    // 3. Deteksi Kolom Status (Menggunakan logika pintar yang sudah kita buat sebelumnya)
+    let statusIndex = -1;
+    const headers = document.querySelectorAll('.p-datatable-thead th');
+    
+    // Cek Header
+    headers.forEach((th, idx) => {
+        const text = th.innerText.toLowerCase().trim();
+        if (text.includes('status faktur') || text === 'status' || text.includes('approval')) statusIndex = idx;
+    });
+
+    // Fallback Scan Baris
+    if (statusIndex === -1 && rows[0]) {
+        const cells = rows[0].querySelectorAll('td');
+        cells.forEach((cell, idx) => {
+            const txt = cell.innerText.toLowerCase();
+            if (txt.includes('approved') || txt.includes('created') || txt.includes('reject')) statusIndex = idx;
+        });
+    }
+
+    if (statusIndex === -1) {
+        this.displayAlertPopup("Gagal menemukan kolom Status untuk difilter.");
+        return;
+    }
+
+    // 4. Lakukan Filtering
+    let matchCount = 0;
+    rows.forEach(row => {
+        if (row.classList.contains('p-datatable-emptymessage') || !row.querySelector('td')) return;
+
+        const cells = row.querySelectorAll('td');
+        if (cells[statusIndex]) {
+            const statusText = cells[statusIndex].innerText.toLowerCase().trim();
+            
+            // Cek apakah status baris ini mengandung SALAH SATU keyword yang diinput user
+            const isMatch = keywords.some(keyword => statusText.includes(keyword));
+
+            if (isMatch) {
+                row.style.display = ''; // Tampilkan
+                matchCount++;
+            } else {
+                row.style.display = 'none'; // Sembunyikan
+            }
+        }
+    });
+
+    this.displayAlertPopup(`✅ Filter diterapkan.\nMenampilkan ${matchCount} data dengan status: "${inputString}"`);
+}
+
+// --- FITUR 2: STATUS COLORING (UPDATE LENGKAP STATUS CORETAX) ---
+   // --- FITUR 2: STATUS COLORING (TOGGLE: ON/OFF & NO POPUP) ---
+    applyStatusColoring() {
+        const rows = document.querySelectorAll('.p-datatable-tbody tr');
+        if (rows.length === 0) return;
+
+        // Inisialisasi status jika belum ada
+        if (typeof this.isColoringActive === 'undefined') {
+            this.isColoringActive = false;
+        }
+
+        const btn = document.querySelector('.custom-color-btn');
+
+        // --- JIKA SUDAH AKTIF, MAKA RESET (MATIKAN) ---
+        if (this.isColoringActive) {
+            rows.forEach(row => {
+                row.style.backgroundColor = '';
+                row.style.borderLeft = '';
+            });
+            
+            this.isColoringActive = false; // Set status mati
+            
+            // Kembalikan visual tombol (opsional)
+            if (btn) {
+                // Hapus ikon default, pastikan hanya 🎨 dan teks
+                btn.innerHTML = `<span style="font-size:16px; margin-right:5px;">🎨</span> Status Color`; 
+                btn.style.background = 'linear-gradient(to right, #6610f2, #520dc2)';
+            }
+            return; // Selesai, keluar fungsi
+        }
+
+        // --- JIKA BELUM AKTIF, MAKA WARNAI (HIDUPKAN) ---
+        
+        const headers = document.querySelectorAll('.p-datatable-thead th');
+        let statusIndex = -1;
+
+        // 1. CARI HEADER
+        headers.forEach((th, idx) => {
+            const text = th.innerText.toLowerCase().trim();
+            if (text.includes('status faktur') || text === 'status' || text.includes('approval')) {
+                statusIndex = idx;
+            }
+        });
+
+        // Fallback: Scan baris pertama jika header tidak ketemu
+        if (statusIndex === -1 && rows[0]) {
+            const cells = rows[0].querySelectorAll('td');
+            cells.forEach((cell, idx) => {
+                const txt = cell.innerText.toLowerCase();
+                if (txt.includes('approved') || txt.includes('created') || txt.includes('reject')) {
+                    statusIndex = idx;
+                }
+            });
+        }
+
+        if (statusIndex === -1) {
+            // Tetap tampilkan alert HANYA jika kolom error/tidak ketemu
+            this.displayAlertPopup("Gagal menemukan kolom 'Status Faktur'.");
+            return;
+        }
+
+        let count = 0;
+        rows.forEach(row => {
+            if (row.classList.contains('p-datatable-emptymessage') || !row.querySelector('td')) return;
+
+            const cells = row.querySelectorAll('td');
+            if (cells[statusIndex]) {
+                const statusText = cells[statusIndex].innerText.toLowerCase().trim();
+                
+                // Reset style dulu biar aman
+                row.style.backgroundColor = '';
+                row.style.borderLeft = '';
+
+                // --- LOGIKA WARNA ---
+                
+                // 1. MERAH (Masalah/Gagal/Batal Permanen)
+                if (/reject|gagal|error|invalid|cancelled|deleted|uncredited/.test(statusText)) {
+                    row.style.backgroundColor = '#ffeef0'; 
+                    row.style.borderLeft = '5px solid #dc3545';
+                    count++;
+                } 
+                
+                // 2. HIJAU (Sukses/Final)
+                else if (/approv|sukses|valid|lapor|berhasil|done|credited|amended|reported/.test(statusText)) {
+                    row.style.backgroundColor = '#f0fff4'; 
+                    row.style.borderLeft = '5px solid #28a745';
+                    count++;
+                } 
+                
+                // 3. KUNING (Proses/Draft/Menunggu)
+                else if (/created|batal|proses|menunggu|waiting|signing|draft|belum/.test(statusText)) {
+                    row.style.backgroundColor = '#fff3cd'; 
+                    row.style.borderLeft = '5px solid #ffc107';
+                    count++;
+                }
+            }
+        });
+
+        // Set status aktif
+        this.isColoringActive = true;
+
+        // Ubah tampilan tombol biar user tau ini lagi aktif (opsional)
+        if (btn) {
+            btn.innerHTML = `🔄 Reset Color (${count})`;
+            btn.style.background = 'linear-gradient(to right, #343a40, #495057)'; // Warna abu gelap
+        }
+
+        // POPUP ALERT "SUKSES" SUDAH DIHAPUS SESUAI PERMINTAAN
+    }
+	
+     // --- [UPAYA TERAKHIR: NON-INTERAKTIF] SHIFT + CLICK PADA CHECKBOX ---
+    attachRowClickListeners() {
+        const rows = document.querySelectorAll('.p-datatable-tbody tr'); 
+        
+        rows.forEach((row, index) => { 
+            if (row.dataset.hanimListenersAttached) return; 
+
+            const selectedColor = '#FBE7A1'; // Warna background saat baris terpilih
+
+            const syncRowColor = (checkbox) => {
+                // Jangan timpa coloring jika sedang aktif mode Status Coloring
+                if (this.isColoringActive) { 
+                    // Tetap panggil calculateTotals, tapi biarkan style.backgroundColor kosong
+                } else if (checkbox.checked) {
+                    row.style.backgroundColor = selectedColor;
+                    row.style.transition = 'background-color 0.2s ease'; 
+                } else {
+                    row.style.backgroundColor = ''; 
+                }
+                // Trigger kalkulator setiap ada perubahan warna/centang
+                this.calculateTotals(); 
+            };
+
+            const checkbox = row.querySelector('input[type="checkbox"]');
+            
+            if (checkbox && !checkbox.dataset.colorChangeListenerAttached) {
+                checkbox.dataset.colorChangeListenerAttached = 'true';
+                checkbox.addEventListener('change', () => {
+                    syncRowColor(checkbox);
+                    
+                    // === UPDATE lastCheckedRowIndex saat centang manual ===
+                    if (checkbox.checked && !this.isShiftKeyPressed) {
+                        // Cari index baris ini di antara baris-baris yang terlihat (tidak terfilter display:none)
+                        const visibleRows = Array.from(document.querySelectorAll('.p-datatable-tbody tr:not([style*="display: none"])'));
+                        const rowIndexInVisibleList = visibleRows.findIndex(r => r === row);
+                        if (rowIndexInVisibleList !== -1) {
+                            this.lastCheckedRowIndex = rowIndexInVisibleList;
+                        }
+                    }
+                    // ==========================================================
+                });
+                syncRowColor(checkbox);
+            }
+
+            if (row.dataset.rowClickListenerAttached) return;
+            row.style.cursor = 'pointer';
+
+            row.addEventListener('click', (event) => {
+                if (!event.isTrusted) return;
+                // Hindari klik jika target adalah elemen interaktif di dalam baris
+                if (event.target.closest('button, a, input, select, textarea, .p-dropdown')) return;
+                
+                // Hindari klik jika pengguna sedang menyeleksi teks
+                const selection = window.getSelection();
+                if (selection && selection.type === 'Range' && !selection.isCollapsed) return;
+
+                event.stopPropagation();
+                event.preventDefault();
+
+                const checkboxInside = row.querySelector('input[type="checkbox"]'); 
+                if (checkboxInside) {
+                    checkboxInside.click();
+                    
+                    // === Update index saat klik row ===
+                    if (!this.isShiftKeyPressed) {
+                         const visibleRows = Array.from(document.querySelectorAll('.p-datatable-tbody tr:not([style*="display: none"])'));
+                         const rowIndexInVisibleList = visibleRows.findIndex(r => r === row);
+                         if (rowIndexInVisibleList !== -1) {
+                            this.lastCheckedRowIndex = rowIndexInVisibleList;
+                        }
+                    }
+                    // ========================================
+                }
+            }, true); 
+
+            row.dataset.hanimListenersAttached = 'true';
+            row.dataset.rowClickListenerAttached = 'true'; 
+        });
+    }
+	
+// --- [FUNGSI BARU] SHIFT-SELECT ---
+   handleShiftSelect(event) {
+        if (!this.isShiftKeyPressed) return;
+        
+        const isDownKey = (event.key === 'ArrowDown' || event.key === 'PageDown');
+        const isUpKey = (event.key === 'ArrowUp' || event.key === 'PageUp');
+        
+        if (!isDownKey && !isUpKey) return; 
+
+        // 0. Ambil semua baris yang terlihat
+        const visibleRows = Array.from(document.querySelectorAll('.p-datatable-tbody tr:not([style*="display: none"])'))
+                               .filter(row => row.querySelector('td')); 
+
+        if (visibleRows.length === 0) return;
+
+        const lastIndexBeforeMove = this.lastCheckedRowIndex;
+
+        // 1. Inisiasi (Jika belum ada yang dicentang, centang baris 0)
+        if (lastIndexBeforeMove === -1) {
+            const firstCheckbox = visibleRows[0].querySelector('input[type="checkbox"]');
+            if (firstCheckbox && !firstCheckbox.checked) {
+                firstCheckbox.click();
+                this.lastCheckedRowIndex = 0;
+            }
+            event.preventDefault();
+            return;
+        }
+
+        // 2. Tentukan target index yang baru
+        let targetIndex = -1;
+
+        if (isDownKey) {
+            targetIndex = lastIndexBeforeMove + 1;
+        } else if (isUpKey) {
+            targetIndex = lastIndexBeforeMove - 1;
+        }
+
+        // 3. Batasi index
+        if (targetIndex < 0 || targetIndex >= visibleRows.length) {
+            event.preventDefault(); 
+            return; 
+        }
+
+        // 4. LOGIKA UTAMA: Siapa yang harus di-toggle?
+        let checkboxToToggle = null;
+        let newLastIndex = targetIndex;
+
+        // Kita akan menggunakan logika untuk membalik status centang:
+        
+        // Cek jika kita bergerak ke arah yang berlawanan dari seleksi sebelumnya.
+        // Asumsi: Saat ini, lastIndexBeforeMove adalah batas terluar seleksi.
+        
+        // a) Jika kita bergerak MUNDUR (misal: dari 7 ke 6, lalu ke 5)
+        if (isUpKey && targetIndex < lastIndexBeforeMove) {
+            // Kita ingin menghilangkan centang pada baris yang BARU SAJA DITINGGALKAN (lastIndexBeforeMove).
+            // Contoh: Dari 7 ke 6, kita harus uncheck baris 7.
+            checkboxToToggle = visibleRows[lastIndexBeforeMove].querySelector('input[type="checkbox"]');
+            
+            // NOTE: Meskipun targetIndex (baris 6) adalah index yang akan digunakan untuk pergerakan selanjutnya,
+            // baris yang statusnya perlu dibalik adalah baris 7.
+            // Kita harus meng-toggle baris 7, kemudian menetapkan lastCheckedRowIndex ke 6.
+            
+            // Cek apakah baris yang akan di-toggle (baris 7) saat ini dicentang (Checked).
+            // Hanya toggle jika baris tersebut memang dicentang.
+            if (checkboxToToggle && checkboxToToggle.checked) {
+                checkboxToToggle.click(); // Uncheck baris 7
+            }
+            
+        } 
+        
+        // b) Jika kita bergerak MAJU (misal: dari 5 ke 6, lalu ke 7)
+        else if (isDownKey && targetIndex > lastIndexBeforeMove) {
+            // Kita ingin mencentang baris yang BARU DITUJU (targetIndex).
+            // Contoh: Dari 5 ke 6, kita harus check baris 6.
+            checkboxToToggle = visibleRows[targetIndex].querySelector('input[type="checkbox"]');
+            
+            // Cek apakah baris yang akan di-toggle (baris 6) saat ini TIDAK dicentang (Unchecked).
+            // Hanya toggle jika baris tersebut memang belum dicentang.
+            if (checkboxToToggle && !checkboxToToggle.checked) {
+                checkboxToToggle.click(); // Check baris 6
+            }
+        }
+        
+        // 5. Update posisi centang terakhir (wajib, agar tahu dari mana pergerakan berikutnya dimulai)
+        this.lastCheckedRowIndex = newLastIndex;
+        
+        // 6. Scroll (Scroll ke baris yang baru dituju: targetRow/visibleRows[newLastIndex])
+        const newTargetRow = visibleRows[newLastIndex];
+        if (newTargetRow) {
+            event.preventDefault(); 
+            newTargetRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    }
+	
+showRenameOptionsPopup(callback, pageType = 'default') {
+    const oldPopup = document.getElementById('rename-options-popup-overlay');
+    if (oldPopup) oldPopup.remove();
+   
+    let variables = [];
+
+    if (pageType === 'bupot_docs') {
+        variables = ["{Nomor Dokumen}", "{Tanggal Dokumen}", "{Jenis Dokumen}", "{Tanggal Pembuatan}", "{Pengguna Pembuatan}"];
+    } 
+    
+    else if (pageType === 'ebupot_bpu') {
+        variables = ["{Masa Pajak}", "{Nomor Pemotongan}", "{Status}", "{NITKU}", "{Jenis Pajak}", "{Kode Objek Pajak}", "{NPWP}", "{Nama}"];
+    } 
+   
+    else if (pageType === 'ebupot_mp') {
+        variables = ["{Masa Pajak}", "{Nomor Pemotongan}", "{NITKU}", "{Kode Lokasi}", "{NPWP}", "{Nama}", "{Status}"];
+    }
+   
+    else if (pageType === 'ebupot_unifikasi') {
+        variables = ["{Masa Pajak}", "{Nomor Pemotongan}", "{NITKU}", "{NPWP}", "{Nama}"];
+    } 
+    else if (pageType === 'output_tax') {
+        variables = ["{NPWP}", "{Nama Pembeli}", "{Nomor Faktur Pajak}", "{Tanggal Faktur Pajak}", "{Masa Pajak}", "{Tahun}", "{Referensi}"];
+    } 
+    else if (pageType === 'input_tax') {
+        variables = ["{NPWP Penjual}", "{Nama Penjual}", "{Nomor Faktur Pajak}", "{Tanggal Faktur Pajak}", "{Masa Pajak}", "{Tahun}", "{Status Faktur}"];
+    } 
+    else if (pageType === 'ebupot_21') {
+        variables = ["{Masa Awal}", "{Masa Akhir}", "{Nomor Pemotongan}", "{Status}", "{NITKU}", "{Jenis Pajak}", "{Kode Objek Pajak}", "{NPWP}", "{Nama}"];
+    } 
+    else if (pageType === 'return_tax') {
+        variables = ["{NPWP Penjual}", "{Nama Penjual}", "{Nomor Faktur}", "{Tanggal Faktur}", "{Nomor Retur}", "{Tanggal Retur}", "{Masa Pajak}", "{Tahun}", "{Status}"];
+    }
+
+    const variableButtonsHtml = variables.map(v => `
+        <code class="variable-tag" style="background:#fff; padding:4px 8px; border-radius:4px; border:1px solid #ccc; cursor:pointer; color:#d63384; font-family:monospace; font-size:12px; user-select:none;">${v}</code>
+    `).join('');
+
+    const overlay = document.createElement('div');
+    overlay.id = 'rename-options-popup-overlay';
+    Object.assign(overlay.style, {
+        position: 'fixed', top: '0', left: '0', width: '100%', height: '100%',
+        backgroundColor: 'rgba(0, 0, 0, 0.6)', zIndex: '20000', display: 'flex', justifyContent: 'center', alignItems: 'center', backdropFilter: 'blur(2px)'
+    });
+
+    const content = document.createElement('div');
+    Object.assign(content.style, { background: 'white', padding: '25px', borderRadius: '12px', width: '90%', maxWidth: '600px', fontFamily: 'Segoe UI, sans-serif', boxShadow: '0 10px 25px rgba(0,0,0,0.5)' });
+
+    content.innerHTML = `
+        <h3 style="margin-top:0; text-align:center; color:#333;">Format Nama File PDF</h3>
+         <h4 style="margin-top:0; text-align:center; color:#333;">Support by @kelapapusing</h4>
+        <div style="background:#f1f3f5; padding:12px; border-radius:8px; margin:15px 0; border:1px solid #dee2e6;">
+            <div style="margin-bottom:8px; font-weight:bold; color:#007bff;">Klik variabel:</div>
+            <div style="display:flex; flex-wrap:wrap; gap:6px;">${variableButtonsHtml}</div>
+        </div>
+
+        <div style="padding: 12px; border: 2px solid #28a745; border-radius: 8px; background-color: #f0fff4; display: flex; align-items: center; gap: 8px;">
+            <input type="text" id="custom_pattern_input" value="" placeholder="Klik variabel di atas untuk menyusun nama baru" 
+                style="flex-grow: 1; padding: 10px; border: 1px solid #b3d7ff; border-radius: 4px; font-family: monospace; font-size: 14px;">
+            <button id="reset-pattern-btn" title="Hapus Semua" 
+                style="padding: 8px 12px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 16px; line-height: 1;">✕</button>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+            <button id="cancel-rename-btn" style="padding: 10px 20px; border-radius: 6px; cursor:pointer; background:#f8f9fa; border: 1px solid #ccc;">Batal</button>
+            <button id="proceed-rename-btn" style="padding: 10px 20px; border-radius: 6px; background: #28a745; color: white; border:none; cursor:pointer; font-weight:bold;">Proses Rename</button>
+        </div>
+    `;
+
+    document.body.appendChild(overlay);
+    overlay.appendChild(content);
+
+    const customInput = document.getElementById('custom_pattern_input');
+    const resetBtn = document.getElementById('reset-pattern-btn');
+
+    // --- LOGIKA TOMBOL X (RESET) ---
+    resetBtn.onclick = () => {
+        customInput.value = "";
+        customInput.focus();
+    };
+
+    // --- LOGIKA KLIK VARIABEL ---
+    content.querySelectorAll('.variable-tag').forEach(tag => {
+        tag.onclick = () => {
+            let val = customInput.value.replace(/\.pdf$/i, '');
+            // Tambahkan underscore jika kolom sudah ada isinya dan karakter terakhir bukan underscore
+            let prefix = (val.length > 0 && !val.endsWith('_')) ? "_" : "";
+            customInput.value = val + prefix + tag.innerText + ".pdf";
+            customInput.focus();
+        };
+        
+        // Efek Hover Sederhana
+        tag.onmouseover = () => { tag.style.background = '#e9ecef'; tag.style.borderColor = '#007bff'; };
+        tag.onmouseout = () => { tag.style.background = '#fff'; tag.style.borderColor = '#ccc'; };
+    });
+
+    // --- TOMBOL PROSES ---
+    document.getElementById('proceed-rename-btn').onclick = () => {
+        const pattern = customInput.value.trim();
+        if (!pattern) {
+            alert("Format nama tidak boleh kosong!");
+            return;
+        }
+        localStorage.setItem('hanim_last_custom_pattern', pattern);
+        overlay.remove();
+        if (callback) callback('custom', pattern);
+    };
+
+    // --- TOMBOL BATAL ---
+    document.getElementById('cancel-rename-btn').onclick = () => overlay.remove();
+    
+    // Klik di luar popup untuk menutup
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+}
+
+async initiateRenameProcess() {
+        const currentUrl = window.location.href;
+
+        // --- 1. IDENTIFIKASI HALAMAN (Sangat Spesifik) ---
+        const isEbupotBpuPage = currentUrl.includes('/ebupotbpu/issued');
+        const isEbupotMPPage  = currentUrl.includes('/ebupotmp/issued');
+        const isEbupot21Page  = currentUrl.includes('/ebupotbp21/issued') || currentUrl.includes('/ebupotbpa1/issued');
+        const isOutputTaxPage = currentUrl.includes('/e-invoice-portal/id-ID/output-tax');
+        const isInputTaxPage  = currentUrl.includes('/e-invoice-portal/id-ID/input-tax');
+        const isReturnPage    = currentUrl.includes('/e-invoice-portal/id-ID/input-return') || currentUrl.includes('/e-invoice-portal/id-ID/output-return');
+        const isBupotDocsPage = currentUrl.includes('/registration-portal/id-ID/documents');
+
+        // --- 2. SETUP PAGE TYPE (Untuk Opsi Variabel di Popup) ---
+        let pageType = 'default';
+        if (isEbupot21Page) {
+            pageType = 'ebupot_21';
+        } else if (isEbupotBpuPage) {
+            pageType = 'ebupot_bpu';
+        } else if (isEbupotMPPage) {
+            pageType = 'ebupot_mp';
+        } else if (isOutputTaxPage) {
+            pageType = 'output_tax';
+        } else if (isInputTaxPage) {
+            pageType = 'input_tax';
+        } else if (isReturnPage) {
+            pageType = 'return_tax';
+        } else if (isBupotDocsPage) {
+            pageType = 'bupot_docs';
+        }
+
+        // --- 3. AMBIL DATA BARIS (CHECKBOX / SELECTED) ---
+        let selectedRows = Array.from(document.querySelectorAll('.p-datatable-tbody tr')).filter(row => {
+            const cb = row.querySelector('.p-checkbox-box.p-highlight') || row.querySelector('input[type="checkbox"]:checked');
+            return cb !== null;
+        });
+
+        // Khusus halaman dokumen, jika tidak ada yang dicentang, proses semua yang tampil
+        if (selectedRows.length === 0 && isBupotDocsPage) {
+            selectedRows = Array.from(document.querySelectorAll('.p-datatable-tbody tr'));
+        }
+
+        if (selectedRows.length === 0) {
+            this.displayAlertPopup("⚠️ Silakan pilih/centang data terlebih dahulu.");
+            return;
+        }
+
+        // --- 4. TAMPILKAN POPUP OPSI ---
+        this.showRenameOptionsPopup(async (selectedFormat, customPattern) => {
+            const filesForPreview = [];
+            
+            selectedRows.forEach((row) => {
+                // Validasi baris (skip header/pesan kosong)
+                if (!row || row.querySelector('th') || row.classList.contains('p-datatable-emptymessage')) return;
+                
+                const cells = row.querySelectorAll('td');
+                if (cells.length === 0) return;
+
+                // Helper Pembersihan karakter terlarang Windows
+                const clean = (str) => (str || '').toString().replace(/[\\/:*?"<>|]/g, '_').trim();
+                const cleanDate = (str) => (str || '').toString().replace(/[\/]/g, '-').trim();
+
+                let dataMap = {};
+                let matchNomor = '';
+                let matchNama = '';
+
+                // --- 5. EKSTRAKSI DATA BERDASARKAN HALAMAN ---
+                
+                // A. HALAMAN EBUPOT BPU (Sesuai Gambar)
+                if (isEbupotBpuPage) {
+                    matchNomor = cells[3]?.innerText.trim(); // Kolom ke-4: Nomor Bupot
+                    matchNama = cells[10]?.innerText.trim(); // Kolom ke-11: Nama Penerima
+                    dataMap = {
+                        '{Masa Pajak}': clean(cells[2]?.innerText),
+                        '{Nomor Pemotongan}': clean(matchNomor),
+                        '{Status}': clean(cells[4]?.innerText),
+                        '{NITKU}': clean(cells[6]?.innerText),
+                        '{Jenis Pajak}': clean(cells[7]?.innerText),
+                        '{Kode Objek Pajak}': clean(cells[8]?.innerText),
+                        '{NPWP}': clean(cells[9]?.innerText),
+                        '{Nama}': clean(matchNama)
+                    };
+                }
+                // B. HALAMAN EBUPOT MP
+                else if (isEbupotMPPage) {
+                    matchNomor = cells[3]?.innerText.trim(); 
+                    matchNama = cells[10]?.innerText.trim(); 
+                    dataMap = {
+                        '{Masa Pajak}': clean(cells[2]?.innerText),
+                        '{Nomor Pemotongan}': clean(matchNomor),
+                        '{Status}': clean(cells[4]?.innerText),
+                        '{NITKU}': clean(cells[6]?.innerText),
+                        '{Nama}': clean(matchNama)
+                    };
+                }
+                // C. HALAMAN E-BUPOT 21 / A1
+                else if (isEbupot21Page) {
+                    matchNomor = cells[4]?.innerText.trim();
+                    matchNama = cells[11]?.innerText.trim();
+                    dataMap = {
+						'{Masa Awal}': clean(cells[2]?.innerText),
+						'{Masa Akhir}': clean(cells[3]?.innerText),
+                        '{NITKU}': clean(cells[7]?.innerText),
+						'{Jenis Pajak}': clean(cells[8]?.innerText),
+						'{Kode Objek Pajak}': clean(cells[9]?.innerText),
+                        '{Nomor Pemotongan}': clean(matchNomor),
+                        '{Status}': clean(cells[5]?.innerText),
+                        '{NPWP}': clean(cells[10]?.innerText),
+                        '{Nama}': clean(matchNama)
+                    };
+                }
+                // D. HALAMAN PAJAK KELUARAN (Output Tax)
+                else if (isOutputTaxPage) {
+                    matchNomor = cells[5]?.innerText.trim();
+                    matchNama = cells[3]?.innerText.trim();
+                    dataMap = {
+                        '{Nama Pembeli}': clean(matchNama),
+                        '{Nomor Faktur Pajak}': clean(matchNomor),
+                        '{Tanggal Faktur Pajak}': cleanDate(cells[6]?.innerText),
+						'{NPWP}': cleanDate(cells[2]?.innerText),
+						'{Masa Pajak}': cleanDate(cells[7]?.innerText),
+						'{Tahun}': cleanDate(cells[8]?.innerText),
+                        '{Referensi}': clean(cells[16]?.innerText)
+                    };
+                }
+				
+                // E. HALAMAN DOKUMEN (Registration)
+                else if (isBupotDocsPage) {
+                    matchNomor = cells[0]?.innerText.trim();
+                    dataMap = {
+                        '{Nomor Dokumen}': clean(matchNomor),
+                        '{Tanggal Dokumen}': cleanDate(cells[1]?.innerText),
+                        '{Jenis Dokumen}': clean(cells[3]?.innerText),
+						'{Tanggal Pembuatan}': clean(cells[5]?.innerText),
+						'{Pengguna Pembuatan}': clean(cells[6]?.innerText)
+                    };
+                    matchNama = "Dokumen";
+                }
+				
+				   // F. HALAMAN PAJAK Masukan (Input Tax)
+                else if (isInputTaxPage) {
+                    matchNomor = cells[4]?.innerText.trim();
+                    matchNama = cells[3]?.innerText.trim();
+                    dataMap = {
+                        '{Nama Penjual}': clean(matchNama),
+                        '{Nomor Faktur Pajak}': clean(matchNomor),
+                        '{Tanggal Faktur Pajak}': cleanDate(cells[5]?.innerText),
+						'{NPWP Penjual}': cleanDate(cells[2]?.innerText),
+						'{Masa Pajak}': cleanDate(cells[6]?.innerText),
+						'{Tahun}': cleanDate(cells[7]?.innerText),
+                        '{Status Faktur}': clean(cells[10]?.innerText)
+                    };
+                }
+				
+                // G. HALAMAN RETUR
+                else if (isReturnPage) {
+                    matchNomor = cells[6]?.innerText.trim();
+                    matchNama = cells[3]?.innerText.trim();
+                    dataMap = {
+                        '{Nama Penjual}': clean(matchNama),
+                        '{NPWP Penjual}': clean(cells[2]?.innerText),
+						'{Nomor Faktur}': clean(cells[4]?.innerText),
+						'{Tanggal Faktur}': clean(cells[5]?.innerText),
+						'{Nomor Retur}': clean(matchNomor),
+						'{Tanggal Retur}': clean(cells[7]?.innerText),
+						'{Masa Pajak}': clean(cells[8]?.innerText),
+						'{Tahun}': clean(cells[9]?.innerText),
+                        '{Status}': clean(cells[10]?.innerText)
+                    };
+                }
+                if (!matchNomor) return;
+
+                // --- LOGIKA PENGGANTIAN NAMA ---
+                let newFilename = customPattern;
+                for (const [key, value] of Object.entries(dataMap)) {
+                    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const regex = new RegExp(escapedKey, 'gi'); 
+                    newFilename = newFilename.replace(regex, value);
+                }
+
+                if (!newFilename.toLowerCase().endsWith('.pdf')) newFilename += '.pdf';
+
+                const matchId = matchNomor.replace(/[^a-zA-Z0-9]/g, '');
+                const invoiceKey = (matchNomor + (matchNama || "file")).replace(/[^a-zA-Z0-9]/g, '');
+                filesForPreview.push({ invoiceKey, newFilename, matchId });
+            });
+            
+            if (filesForPreview.length > 0) {
+                const storageAPI = (typeof browser !== 'undefined') ? browser.storage : chrome.storage;
+                await storageAPI.local.set({ filesForPreview });
+                chrome.runtime.sendMessage({ action: "openRenamePreviewPage" });
+                this.initiateDownload(); 
+            }
+        }, pageType); 
+    }
+
+    async extractTableData() {
+        const checkboxes = document.querySelectorAll('input[type="checkbox"]:checked');
+        if (checkboxes.length === 0) {
+            this.displayAlertPopup("Pilih setidaknya satu baris untuk diproses.");
+            return null;
+        }
+        const isInputTaxPage = window.location.href.includes('/e-invoice-portal/id-ID/input-tax');
+        const selectedData = [];
+        let tableContent = "";
+        const headers = isInputTaxPage 
+            ? ["No_Pajak", "Tgl_Pajak", "NPWP_Penjual", "Nama_Penjual", "Masa_Pajak", "DPP", "PPN", "Jumlah"]
+            : ["Referensi", "Tgl_Faktur", "No_Pajak", "NPWP_Pembeli", "Nama_Pembeli", "DPP", "DPPLain", "PPN", "Jumlah", "Masa", "Tahun", "Status"];
+        selectedData.push(headers);
+        checkboxes.forEach((checkbox, index) => {
+            const row = checkbox.closest('tr');
+            if (!row || row.querySelector('th')) return;
+            const cells = row.querySelectorAll('td');
+            if (isInputTaxPage) {
+                const noPajak = cells[4]?.innerText.trim() || '';
+                const tglPajak = cells[5]?.innerText.trim() || '';
+                const masaPajak = cells[6]?.innerText.trim() || '';
+                const npwpPembeli = cells[2]?.innerText.trim() || '';
+                const namaPembeli = cells[3]?.innerText.trim() || '';
+                const dpp = parseFloat(cells[11]?.innerText.trim().replace(/\./g, '')) || 0;
+                const ppn = parseFloat(cells[13]?.innerText.trim().replace(/\./g, '')) || 0;
+                const sum = dpp + ppn;
+                const formattedDpp = `Rp ${dpp.toLocaleString('id-ID')}`;
+                const formattedPpn = `Rp ${ppn.toLocaleString('id-ID')}`;
+                const formattedSum = `Rp ${sum.toLocaleString('id-ID')}`;
+                tableContent += `<tr>
+                    <td>${noPajak}</td><td>${tglPajak}</td><td>${npwpPembeli}</td><td>${namaPembeli}</td>
+                    <td>${masaPajak}</td><td>${formattedDpp}</td><td>${formattedPpn}</td><td>${formattedSum}</td>
+                </tr>`;
+                const rowData = [noPajak, tglPajak, npwpPembeli, namaPembeli, masaPajak, dpp, ppn, sum];
+                selectedData.push(rowData);
+            } else { 
+                const rowData = [];
+                const selectedColumns = [16, 6, 5, 2, 3, 11, 12, 13];
+                let col11Value = 0, col13Value = 0;
+                selectedColumns.forEach(colIndex => {
+                    if (cells[colIndex]) {
+                        let text = cells[colIndex].innerText.trim();
+                        if ([11, 12, 13].includes(colIndex)) text = text.replace(/\./g, '');
+                        if (colIndex === 11) col11Value = parseInt(text) || 0;
+                        if (colIndex === 13) col13Value = parseInt(text) || 0;
+                        rowData.push(text);
+                    }
+                });
+                const totalJumlah = col11Value + col13Value;
+                rowData.push(totalJumlah);
+                [7, 8, 9].forEach(colIndex => {
+                    if (cells[colIndex]) rowData.push(cells[colIndex].innerText.trim());
+                });
+                selectedData.push(rowData);
+                const ref = cells[16]?.innerText.trim().replace(/\.pdf$/i, '') || `data-${index}`;
+                const tglFaktur = cells[6]?.innerText.trim() || '';
+                const noPajak = cells[5]?.innerText.trim() || '';
+                const npwpPembeli = cells[2]?.innerText.trim() || '';
+                const namaPembeli = cells[3]?.innerText.trim() || '';
+                const dpp = parseFloat(cells[11]?.innerText.trim().replace(/\./g, '')) || 0;
+                const ppn = parseFloat(cells[13]?.innerText.trim().replace(/\./g, '')) || 0;
+                const sum = dpp + ppn;
+                const formattedDpp = `Rp ${dpp.toLocaleString('id-ID')}`;
+                const formattedPpn = `Rp ${ppn.toLocaleString('id-ID')}`;
+                const formattedSum = `Rp ${sum.toLocaleString('id-ID')}`;
+                tableContent += `<tr>
+                    <td>${ref}</td><td>${tglFaktur}</td><td>${npwpPembeli}</td><td>${namaPembeli}</td>
+                    <td>${noPajak}</td><td>${formattedDpp}</td><td>${formattedPpn}</td><td>${formattedSum}</td>
+                </tr>`;
+            }
+        });
+        return { selectedData, tableContent };
+    }
+
+    async openRekapPage() {
+        const data = await this.extractTableData();
+        if (data && data.tableContent) {
+            chrome.runtime.sendMessage({ action: "saveTableContent", content: data.tableContent });
+        }
+    }
+
+    async exportToCSV() {
+        const data = await this.extractTableData();
+        if (data && data.selectedData.length > 1) {
+            chrome.runtime.sendMessage({ action: "downloadExcel", data: data.selectedData });
+        }
+    }
+
+    filterTableRows(searchText) {
+        const filterText = searchText.toLowerCase().trim();
+        const rows = document.querySelectorAll('.p-datatable-tbody tr');
+
+        rows.forEach(row => {
+            if (!row.querySelector('td')) {
+                if (!row.classList.contains('p-datatable-emptymessage')) {
+                     return; 
+                }
+            }
+
+            if (row.classList.contains('p-datatable-emptymessage')) {
+                row.style.display = filterText ? 'none' : '';
+                return;
+            }
+
+            const allRowText = row.innerText.toLowerCase();
+            const isMatch = !filterText || allRowText.includes(filterText);
+            row.style.display = isMatch ? '' : 'none';
+        });
+    }
+           
+    handleDuplicateCheck() {
+        const btn = document.getElementById('btn-cek-duplikat');
+        const rows = document.querySelectorAll('.p-datatable-tbody tr');
+
+        // Tentukan status aksi. Jika tombol toolbar ada, gunakan status data-active-nya.
+        // Jika tombol toolbar TIDAK ada (dipanggil dari Smart Select), asumsikan isActive = false (mode Cek Duplikat).
+        let isActive = false;
+        if (btn) {
+            isActive = btn.getAttribute('data-active') === 'true';
+        }
+
+        if (isActive) {
+            // --- LOGIKA 1: RESET TABEL (Hanya berjalan jika tombol toolbar ada dan aktif) ---
+            rows.forEach(row => {
+                row.style.display = ''; 
+                row.style.backgroundColor = ''; 
+                
+                const checkbox = row.querySelector('input[type="checkbox"]');
+                if (checkbox && checkbox.checked) {
+                    row.style.backgroundColor = '#FBE7A1'; 
+                }
+            });
+            
+            // Perbarui tombol toolbar (Jika ada)
+            if (btn) {
+                btn.innerHTML = `<img src="https://d1bpj0tv6vfxyp.cloudfront.net/articles/f83b30d9-adb0-44d1-8c58-2eb915e3053f_article_image_url.webp" style="width: 18px; height: 18px; margin-right: 6px; vertical-align: middle;"> Cek Duplikat`;
+                btn.style.background = 'linear-gradient(to right, #6f42c1, #a885d8)';
+                btn.setAttribute('data-active', 'false');
+            }
+            this.filterTableRows(''); 
+
+        } else {
+            // --- LOGIKA 2: CEK DUPLIKAT (Berjalan jika tombol toolbar tidak aktif atau tidak ada) ---
+            const headers = Array.from(document.querySelectorAll('.p-datatable-thead th'));
+            const refIndex = headers.findIndex(th => th.innerText.trim().toLowerCase().includes('referensi'));
+
+            if (refIndex === -1) {
+                this.displayAlertPopup("Kolom 'Referensi' tidak ditemukan di tabel ini.");
+                return;
+            }
+
+            const refCounts = {};
+            const rowDataMap = new Map(); 
+
+            rows.forEach((row) => {
+                if (!row.querySelector('td')) return;
+
+                const cells = row.querySelectorAll('td');
+                if (cells[refIndex]) {
+                    const text = cells[refIndex].innerText.trim();
+                    if (text && text !== '-') { 
+                        refCounts[text] = (refCounts[text] || 0) + 1;
+                        rowDataMap.set(row, text);
+                    }
+                }
+            });
+
+            let duplicateFoundCount = 0;
+
+            rows.forEach(row => {
+                if (!row.querySelector('td') || row.classList.contains('p-datatable-emptymessage')) return;
+
+                const text = rowDataMap.get(row);
+                
+                if (text && refCounts[text] > 1) {
+                    row.style.display = ''; 
+                    row.style.backgroundColor = '#ffcccc'; // Sorot duplikat
+                    duplicateFoundCount++;
+                } else {
+                    row.style.display = 'none'; // Sembunyikan yang bukan duplikat
+                }
+            });
+
+            // Perbarui tombol toolbar (jika ada) atau tampilkan notifikasi hasil
+            if (btn) {
+                if (duplicateFoundCount === 0) {
+                    this.displayAlertPopup("✅ Data bersih! Tidak ditemukan duplikasi pada kolom Referensi di halaman ini.");
+                } else {
+                    btn.innerHTML = `🔄 Reset Tabel (${duplicateFoundCount} Data)`;
+                    btn.style.background = 'linear-gradient(to right, #dc3545, #c82333)'; 
+                    btn.setAttribute('data-active', 'true');
+                }
+            } else {
+                 // Jika dipanggil dari Smart Select (btn null)
+                 if (duplicateFoundCount === 0) {
+                    this.displayAlertPopup("✅ Data bersih! Tidak ditemukan duplikasi pada kolom Referensi di halaman ini.");
+                } else {
+                    this.displayAlertPopup(`⚠️ Ditemukan ${duplicateFoundCount} data duplikat pada kolom Referensi. Tabel telah difilter untuk menampilkannya. Gunakan 'Reset Semua Filter' atau muat ulang halaman untuk kembali ke tampilan normal.`);
+                }
+            }
+        }
+    }
+	
+    triggerNativeServerSearch(keyword) {
+        if (!keyword) return; 
+
+        console.log("Extension: Mencoba pencarian server untuk:", keyword);
+        const currentUrl = window.location.href;
+        
+        let nameColIndex = 3;  
+        let taxIdColIndex = 5; 
+
+        if (currentUrl.includes('/input-tax')) {
+             nameColIndex = 3; 
+             taxIdColIndex = 4;
+        } else if (currentUrl.includes('/input-return')) {
+             nameColIndex = 3; 
+             taxIdColIndex = 6; 
+        }
+
+        const isTaxIdPattern = /[\d.-]{4,}/.test(keyword);
+        const targetIndex = isTaxIdPattern ? taxIdColIndex : nameColIndex;
+        const filterRow = document.querySelector('.p-datatable-thead > tr:nth-child(2)');
+        
+        if (filterRow) {
+            const cells = filterRow.querySelectorAll('th, td');
+            if (cells[targetIndex]) {
+                const nativeInput = cells[targetIndex].querySelector('input');
+                
+                if (nativeInput) {
+                    nativeInput.style.backgroundColor = '#fff3cd'; 
+                    setTimeout(() => nativeInput.style.backgroundColor = '', 500);
+
+                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                    nativeInputValueSetter.call(nativeInput, keyword);
+                    
+                    nativeInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    nativeInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                    
+                    console.log(`Sukses mengirim perintah cari ke kolom index ${targetIndex}`);
+                } else {
+                    console.log("Input server tidak tersedia untuk kolom ini. Mengandalkan Filter Lokal saja.");
+                    const toast = document.createElement('div');
+                    toast.textContent = '⚠️ Kolom ini tidak mendukung pencarian Server. Mencari data di layar saja...';
+                    Object.assign(toast.style, {
+                        position: 'fixed', bottom: '80px', left: '50%', transform: 'translateX(-50%)',
+                        backgroundColor: '#333', color: '#fff', padding: '10px 20px', borderRadius: '20px',
+                        zIndex: '99999', fontSize: '12px', opacity: '0.9', pointerEvents: 'none'
+                    });
+                    document.body.appendChild(toast);
+                    setTimeout(() => toast.remove(), 3000);
+                }
+            }
+        } else {
+             console.warn("Baris filter tabel tidak ditemukan.");
+        }
+    }
+
+// --- FITUR DRAGGABLE: UPDATE ANTI-HILANG SAAT ZOOM ---
+    makeDraggable(element, storageKey) {
+        if (!element) return;
+
+        let isDragging = false;
+        let startX, startY, initialLeft, initialTop;
+
+        // --- FUNGSI RESET KE DEFAULT (POJOK KANAN BAWAH) ---
+        const resetToDefault = () => {
+            element.style.left = '';
+            element.style.top = '';
+            element.style.bottom = '100px'; // Posisi default Y
+            element.style.right = '30px';   // Posisi default X
+            localStorage.removeItem(storageKey);
+            console.log(`[Auto-Fix] Tombol ${storageKey} dikembalikan ke layar.`);
+        };
+
+        // --- 1. Validasi Posisi Saat Load ---
+        const savedPos = localStorage.getItem(storageKey);
+        if (savedPos) {
+            try {
+                const pos = JSON.parse(savedPos);
+                // Terapkan dulu
+                element.style.left = pos.left;
+                element.style.top = pos.top;
+                element.style.bottom = 'auto';
+                element.style.right = 'auto';
+
+                // Cek apakah langsung off-screen saat load?
+                const rect = element.getBoundingClientRect();
+                if (rect.right > window.innerWidth || rect.bottom > window.innerHeight || rect.left < 0 || rect.top < 0) {
+                    resetToDefault();
+                }
+            } catch (e) { resetToDefault(); }
+        }
+
+        // --- 2. Validasi Posisi Saat Layar Berubah/ZOOM (PENTING) ---
+        window.addEventListener('resize', () => {
+            const rect = element.getBoundingClientRect();
+            // Jika elemen keluar dari viewport karena zoom
+            if (rect.left > window.innerWidth - 50 || rect.top > window.innerHeight - 50) {
+                resetToDefault();
+            }
+        });
+
+        // --- 3. Logika Dragging (Tetap Sama) ---
+        const handle = element.querySelector('#hanim-live-calc > div:first-child') || element;
+        handle.style.cursor = 'move';
+        
+        handle.addEventListener('mousedown', (e) => {
+            // Filter: Jangan drag jika klik tombol interaktif
+            if (['BUTTON', 'INPUT', 'SELECT', 'A', 'SVG', 'PATH', 'POLYLINE'].includes(e.target.tagName)) return;
+
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            
+            const rect = element.getBoundingClientRect();
+            initialLeft = rect.left;
+            initialTop = rect.top;
+
+            // Kunci ukuran saat drag
+            element.style.width = rect.width + 'px'; 
+
+            element.style.bottom = 'auto';
+            element.style.right = 'auto';
+            element.style.left = `${initialLeft}px`;
+            element.style.top = `${initialTop}px`;
+            element.style.transition = 'none'; // Matikan animasi biar responsif
+
+            e.preventDefault();
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            element.style.left = `${initialLeft + dx}px`;
+            element.style.top = `${initialTop + dy}px`;
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                element.style.transition = 'opacity 0.3s, transform 0.2s';
+                element.style.width = ''; // Lepas kunci ukuran
+
+                // Simpan posisi baru
+                const currentPos = { left: element.style.left, top: element.style.top };
+                localStorage.setItem(storageKey, JSON.stringify(currentPos));
+            }
+        });
+    }
+	
+    getInvoiceDataFromRow(row) {
+    const currentUrl = window.location.href;
+    const isEbupotBpuPage = currentUrl.includes('/ebupotbpu/issued');
+    const isEbupotMPPage = currentUrl.includes('/ebupotmp/issued');
+    const isEbupot21Page = currentUrl.includes('/ebupotbp21/issued') || currentUrl.includes('/ebupotbpa1/issued');
+    const isBupotDocsPage = currentUrl.includes('/registration-portal/id-ID/documents');
+    const isInputReturnPage = currentUrl.includes('/e-invoice-portal/id-ID/input-return');
+    const isInputTaxPage = currentUrl.includes('/e-invoice-portal/id-ID/input-tax');
+    
+    const cells = row.querySelectorAll('td');
+
+    // A1. KHUSUS BPU (Sesuai Gambar)
+    if (isEbupotBpuPage) {
+        const noPajak = cells[3]?.innerText.trim(); // Kolom Nomor Pemotongan
+        if (!noPajak) return null; 
+        return {
+            noPajak: noPajak, 
+            namaPembeli: cells[10]?.innerText.trim() || 'BPU', 
+            referensi: cells[6]?.innerText.trim() || 'N/A' // Mengambil NITKU sebagai referensi
+        };
+    }
+
+    // A2. KHUSUS MP
+    if (isEbupotMPPage) {
+        const noPajak = cells[3]?.innerText.trim(); 
+        if (!noPajak) return null; 
+        return {
+            noPajak: noPajak, 
+            namaPembeli: cells[10]?.innerText.trim() || 'MP', 
+            referensi: cells[6]?.innerText.trim() || 'N/A'
+        };
+    }
+
+    // B. KHUSUS EBUPOT 21
+    if (isEbupot21Page) {
+        const noPajak = cells[4]?.innerText.trim(); 
+        if (!noPajak) return null; 
+        return {
+            noPajak: noPajak, 
+            namaPembeli: cells[11]?.innerText.trim() || '21/A1', 
+            referensi: cells[10]?.innerText.trim() || 'N/A' 
+        };
+    }
+        if (isBupotDocsPage) {
+            // "Nomor Dokumen" ada di Kolom 0
+            const noPajak = row.querySelector("td:first-child")?.innerText.trim(); 
+            if (!noPajak) return null; 
+            return {
+                noPajak: noPajak, 
+                namaPembeli: row.querySelector("td:nth-child(4)")?.innerText.trim() || 'Bupot', 
+                referensi: row.querySelector("td:nth-child(2)")?.innerText.trim() || 'N/A'
+            };
+        }
+
+        if (isInputReturnPage) {
+            const noPajak = cells[6]?.innerText.trim(); 
+            if (!noPajak) return null;
+            return {
+                noPajak: noPajak,
+                namaPembeli: cells[3]?.innerText.trim() || 'Retur', 
+                referensi: cells[4]?.innerText.trim() || 'N/A' 
+            };
+        }
+
+        if (isInputTaxPage) {
+             const noPajak = cells[4]?.innerText.trim() || ''; 
+             if (!noPajak) return null;
+             return {
+                noPajak: noPajak,
+                namaPembeli: cells[3]?.innerText.trim() || '',
+                referensi: cells[5]?.innerText.trim() || ''
+            };
+        }
+
+        let noPajak = null;
+        for (let i = 0; i < row.children.length; i++) {
+            const text = row.children[i].innerText.trim();
+            if (/^0\d{2}\.\d{3}-\d{2}\.\d{8}$/.test(text)) {
+                noPajak = text;
+                break;
+            }
+        }
+        
+        if (!noPajak) noPajak = cells[5]?.innerText.trim() || ''; 
+        
+        if (!noPajak) return null;
+
+        return {
+            noPajak: noPajak,
+            namaPembeli: cells[3]?.innerText.trim() || 'N/A',
+            referensi: cells[16]?.innerText.trim() || 'N/A'
+        };
+    }
+	
+    locateRowByInvoice(invoiceData) {
+        const { noPajak } = invoiceData;
+        if (!noPajak) return null;
+
+        const currentUrl = window.location.href;
+        
+        // --- 1. IDENTIFIKASI HALAMAN ---
+        const isEbupotBpuPage = currentUrl.includes('/ebupotbpu/issued');
+        const isEbupotMPPage  = currentUrl.includes('/ebupotmp/issued');
+        const isEbupot21Page  = currentUrl.includes('/ebupotbp21/issued') || currentUrl.includes('/ebupotbpa1/issued');
+        const isBupotDocsPage = currentUrl.includes('/registration-portal/id-ID/documents');
+        const isInputReturnPage = currentUrl.includes('/e-invoice-portal/id-ID/input-return');
+
+        const rows = Array.from(document.querySelectorAll("table tbody tr"));
+
+        // --- 2. PENCARIAN BARIS BERDASARKAN HALAMAN ---
+
+        // A. Jika di halaman BPU atau MP (Nomor Pajak di Kolom ke-4 / Indeks 3)
+        if (isEbupotBpuPage || isEbupotMPPage) {
+            return rows.find(r => {
+                const cells = r.querySelectorAll('td');
+                // Berdasarkan gambar Anda, Nomor Pemotongan ada di cells[3]
+                return cells[3]?.innerText.trim() === noPajak;
+            });
+        }
+
+        // B. Jika di halaman EBUPOT 21 / A1 (Nomor Pajak di Kolom ke-5 / Indeks 4)
+        if (isEbupot21Page) {
+            return rows.find(r => {
+                const cells = r.querySelectorAll('td');
+                return cells[4]?.innerText.trim() === noPajak;
+            });
+        }
+
+        // C. Jika di halaman Dokumen Registrasi (Nomor Dokumen di Kolom ke-1 / Indeks 0)
+        if (isBupotDocsPage) {
+            return rows.find(r => {
+                const cells = r.querySelectorAll('td');
+                return cells[0]?.innerText.trim() === noPajak;
+            });
+        }
+
+        // D. Jika di halaman Retur (Nomor Retur di Kolom ke-7 / Indeks 6)
+        if (isInputReturnPage) {
+            return rows.find(r => {
+                const cells = r.querySelectorAll('td');
+                return cells[6]?.innerText.trim() === noPajak;
+            });
+        }
+
+        // E. Logika Pencarian Terakhir (Fallback)
+        return rows.find(row => {
+            const data = this.getInvoiceDataFromRow(row);
+            return data && data.noPajak === noPajak;
+        });
+    }
+	
+    handleManualCancellation() {
+         this.isDownloadCancelled = true; 
+         this.stopCancelTimer(); 
+         console.log("⛔ Unduhan dibatalkan paksa oleh user.");
+         this.removeProgressUI();
+         const toast = document.createElement('div');
+         toast.textContent = '🛑 Proses unduhan telah dihentikan secara paksa.';
+         Object.assign(toast.style, {
+            position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)',
+            backgroundColor: '#333', color: '#fff', padding: '12px 24px', borderRadius: '50px',
+            zIndex: '20005', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', fontSize: '14px'
+         });
+         document.body.appendChild(toast);
+         setTimeout(() => toast.remove(), 3000); 
+    }
+
+    showRetryPopup(failedItems) {
+        const oldPopup = document.getElementById('hanim-retry-popup-overlay');
+        if (oldPopup) oldPopup.remove();
+        const overlay = document.createElement('div');
+        overlay.id = 'hanim-retry-popup-overlay';
+        Object.assign(overlay.style, {
+            position: 'fixed', top: '0', left: '0', width: '100%', height: '100%',
+            backgroundColor: 'rgba(0, 0, 0, 0.6)', zIndex: '20000',
+            display: 'flex', justifyContent: 'center', alignItems: 'center'
+        });
+        const content = document.createElement('div');
+        Object.assign(content.style, {
+            background: 'white', padding: '25px', borderRadius: '12px',
+            boxShadow: '0 5px 15px rgba(0,0,0,0.3)', width: '90%',
+            maxWidth: '450px', textAlign: 'left'
+        });
+        content.innerHTML = `
+            <h3 style="margin-top:0; color: #333; text-align: center; font-size: 1.3em;">Download Tidak Selesai</h3>
+            <p style="text-align: center; color: #555; font-size: 1.1em; line-height: 1.5;">
+                Terdapat <strong>${failedItems.length} file</strong> yang belum selesai diunduh.
+                <br>
+                Apakah Anda ingin melanjutkan mengunduh sisa file tersebut?
+            </p>
+            <div class="popup-buttons" style="display: flex; justify-content: space-around; gap: 15px; margin-top: 25px;">
+                <button id="close-retry-btn" style="padding: 12px 20px; border-radius: 8px; border: 1px solid #ccc; background: #f0f0f0; cursor: pointer; flex-grow: 1; font-weight: bold;">Tidak, Tutup</button>
+                <button id="proceed-retry-btn" style="padding: 12px 20px; border-radius: 8px; border: none; background: #28a745; color: white; cursor: pointer; flex-grow: 1; font-weight: bold;">Ya, Lanjutkan</button>
+            </div>
+        `;
+        overlay.appendChild(content);
+        document.body.appendChild(overlay);
+        document.getElementById('proceed-retry-btn').addEventListener('click', async () => {
+            overlay.remove();
+            
+            console.log("Melanjutkan download untuk item yang gagal:", failedItems);
+            this.initiateDownload(failedItems); 
+        });
+        document.getElementById('close-retry-btn').addEventListener('click', () => { overlay.remove(); });
+    }
+
+    createOrUpdateProgress(current, total) {
+        this.removeProgressUI(); 
+        
+        const overlay = document.createElement('div');
+        overlay.id = 'hanim-progress-overlay';
+        Object.assign(overlay.style, {
+            position: 'fixed', top: '0', left: '0', width: '100%', height: '100%',
+            backgroundColor: 'rgba(0, 0, 0, 0.6)', zIndex: '20000',
+            opacity: '0', transition: 'opacity 0.3s ease'
+        });
+
+        const container = document.createElement('div');
+        container.id = 'hanim-progress-container';
+        Object.assign(container.style, {
+            position: 'fixed', top: '50%', left: '50%',
+            transform: 'translate(-50%, -50%) scale(0.95)', width: '90%',
+            maxWidth: '500px', backgroundColor: '#fff', color: '#333',
+            padding: '20px 25px', borderRadius: '12px', zIndex: '20001',
+            boxShadow: '0 8px 25px rgba(0,0,0,0.15)', opacity: '0',
+            display: 'flex', flexDirection: 'column', gap: '15px',
+            transition: 'opacity 0.3s ease, transform 0.3s ease'
+        });
+
+        const title = document.createElement('h3');
+        title.textContent = '⚙️ Sedang Memproses Unduhan...';
+        Object.assign(title.style, { margin: '0', textAlign: 'center', fontSize: '1.4em' });
+        
+        const supportText = document.createElement('div');
+        supportText.textContent = 'Support by @kelapapusing2x';
+        Object.assign(supportText.style, {
+            textAlign: 'center', fontSize: '0.8em',
+            color: '#777', marginTop: '4px', marginBottom: '-8px'
+        });
+        
+        const progressText = document.createElement('div');
+        progressText.id = 'hanim-progress-text';
+        Object.assign(progressText.style, { fontSize: '1em', textAlign: 'center', color: '#555' });
+        progressText.textContent = `Selesai: ${current} dari ${total} file.`;
+
+        const listContainer = document.createElement('div');
+        listContainer.id = 'hanim-live-list';
+        Object.assign(listContainer.style, {
+            maxHeight: '40vh', overflowY: 'auto', border: '1px solid #ddd',
+            borderRadius: '8px', padding: '10px', display: 'flex',
+            flexDirection: 'column', gap: '8px'
+        });
+
+        this.currentDownloadQueue.forEach(item => {
+            const listItem = document.createElement('div');
+            listItem.className = 'live-list-item';
+            listItem.dataset.nopajak = item.noPajak; 
+            Object.assign(listItem.style, {
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                padding: '8px', borderBottom: '1px solid #eee'
+            });
+
+            const info = document.createElement('div');
+            const referensiText = item.referensi && item.referensi !== 'N/A' ? ` | ${item.referensi}` : '';
+            info.innerHTML = `<strong style="display: block;">${item.noPajak}</strong><span style="font-size: 0.9em; color: #555;">${item.namaPembeli}${referensiText}</span>`;
+
+            const status = document.createElement('span');
+            status.className = 'status-text';
+            status.textContent = 'Menunggu...';
+            Object.assign(status.style, { fontStyle: 'italic', color: '#888', transition: 'all 0.3s ease' });
+
+            listItem.appendChild(info);
+            listItem.appendChild(status);
+            listContainer.appendChild(listItem);
+        });
+
+        const cancelButton = document.createElement('button');
+        cancelButton.id = 'hanim-cancel-button';
+        cancelButton.innerHTML = '⛔<b>BATALKAN DOWNLOAD</b>'; 
+        Object.assign(cancelButton.style, {
+            display: 'block', 
+            marginTop: '15px', width: '100%', padding: '12px',
+            backgroundColor: '#dc3545', 
+            color: 'white', border: 'none',
+            borderRadius: '8px', cursor: 'pointer', fontSize: '15px',
+            fontWeight: 'bold', boxShadow: '0 4px 6px rgba(220, 53, 69, 0.3)',
+            transition: 'background-color 0.2s'
+        });
+        
+        cancelButton.onmouseenter = () => cancelButton.style.backgroundColor = '#c82333';
+        cancelButton.onmouseleave = () => cancelButton.style.backgroundColor = '#dc3545';
+
+        cancelButton.onclick = () => {
+            cancelButton.innerHTML = '⏳ Menghentikan proses...'; 
+            cancelButton.style.opacity = '0.7';
+            this.handleManualCancellation(); 
+        };
+
+        container.appendChild(title);
+        container.appendChild(supportText);
+        container.appendChild(progressText);
+        container.appendChild(listContainer); 
+        container.appendChild(cancelButton); 
+        
+        document.body.appendChild(overlay);
+        document.body.appendChild(container);
+
+        setTimeout(() => {
+            overlay.style.opacity = '1';
+            container.style.opacity = '1';
+            container.style.transform = 'translate(-50%, -50%) scale(1)';
+        }, 10);
+    }
+    
+    // === content.js (GANTI METHOD INI DI DALAM CLASS InvoiceDownloader) ===
+
+    updateLiveProgressList(current, total, successfulFiles) {
+        if (this.downloadFinished) return; 
+
+        this.playRocketAnimation(); // Pastikan fungsi ini ada atau hapus jika tidak dipakai
+
+        const progressText = document.getElementById('hanim-progress-text');
+        if (progressText) {
+            progressText.textContent = `Selesai: ${current} dari ${total} file.`;
+        }
+
+        // Fungsi helper: Ambil hanya angka dari string (untuk pencocokan yang akurat)
+        const getDigitsOnly = (str) => (str || '').replace(/[^0-9]/g, '');
+
+        this.currentDownloadQueue.forEach(itemData => {
+            const { noPajak } = itemData; 
+            if (!noPajak) return;
+
+            // Cari elemen list berdasarkan atribut data-nopajak
+            const listItem = document.querySelector(`.live-list-item[data-nopajak="${noPajak}"]`);
+            if (!listItem) return; 
+
+            const status = listItem.querySelector('.status-text');
+            // Jika sudah sukses, skip biar hemat resource
+            if (status.textContent === '✅ Sukses') return;
+
+            // --- LOGIKA PENCOCOKAN YANG LEBIH CERDAS ---
+            const targetDigits = getDigitsOnly(noPajak);
+
+            const isSuccess = successfulFiles.some(filename => {
+                // Bersihkan nama file dari .pdf dan karakter non-angka
+                const fileDigits = getDigitsOnly(filename);
+                // Cek apakah angka No Pajak ada di dalam angka Nama File (atau sebaliknya)
+                return fileDigits.includes(targetDigits) || (targetDigits.length > 5 && fileDigits.includes(targetDigits.substring(0, targetDigits.length - 2)));
+            });
+
+            if (isSuccess) {
+                status.textContent = '✅ Sukses';
+                status.style.color = '#28a745';
+                status.style.fontWeight = 'bold';
+                status.style.fontStyle = 'normal';
+                
+                // Efek visual kecil pada baris list
+                listItem.style.backgroundColor = '#f0fff4';
+            }
+        });
+    }
+
+    // --- TAMBAHKAN FUNGSI INI JIKA BELUM ADA (Agar tidak error saat dipanggil) ---
+    playRocketAnimation() {
+        // Kosongkan saja jika tidak ingin ada animasi, atau isi dengan logika animasi roket Anda
+    }
+
+    removeProgressUI() {
+        this.stopCancelTimer();
+        const overlay = document.getElementById('hanim-progress-overlay');
+        const container = document.getElementById('hanim-progress-container');
+        if (container) {
+            overlay.style.opacity = '0';
+            container.style.opacity = '0';
+            container.style.transform = 'translate(-50%, -50%) scale(0.95)';
+            setTimeout(() => {
+                if (overlay && overlay.parentElement) overlay.remove();
+                if (container && container.parentElement) container.remove();
+            }, 300);
+        }
+    }
+
+ async initiateDownload(itemsToDownload = null) {
+      this.isDownloadCancelled = false;
+      this.completedDownloadCount = 0; 
+      this.downloadFinished = false; 
+	  
+      this.downloadStartTime = Date.now();
+      
+      const isBupotPage = window.location.href.includes('/registration-portal/id-ID/documents');
+
+      const downloadQueue = itemsToDownload || Array.from(
+          new Set(
+              Array.from(document.querySelectorAll("table tbody tr"))
+                .filter(row => {
+                    if (isBupotPage) {
+                        return true; 
+                    }
+                    return row.querySelector("input[type='checkbox']")?.checked;
+                }) 
+                .map(row => this.getInvoiceDataFromRow(row))
+                .filter(item => item && item.noPajak) 
+          )
+      );
+      
+      this.currentDownloadQueue = downloadQueue; 
+      
+      if (downloadQueue.length === 0) {
+        if (!itemsToDownload) this.displayAlertPopup("PERHATIAN: Tidak ada data yang dipilih atau ditemukan.");
+        return;
+      }
+      
+      const isRenameProcess = document.getElementById('rename-options-popup-overlay') != null; 
+      if (!itemsToDownload && !isRenameProcess) {
+        await chrome.storage.local.set({ latestDownloadedFiles: [] });
+      }
+          
+      await chrome.storage.local.set({ downloadJobInfo: { expected: downloadQueue.length, completed: 0 } });
+      
+      this.createOrUpdateProgress(this.completedDownloadCount, downloadQueue.length);
+      this.startCancelTimer(); 
+
+      for (let i = 0; i < downloadQueue.length; i++) {
+          if (this.isDownloadCancelled) {
+              console.log("Proses klik dihentikan karena pembatalan.");
+              return; 
+          }
+          const itemData = downloadQueue[i]; 
+          const rowElement = this.locateRowByInvoice(itemData);
+          
+          if (rowElement) {
+              const dlButton = rowElement.querySelector("td:last-child button, td:last-child a, #DownloadButton");
+              
+              const bupotIssuedDlButton = rowElement.querySelector("button[ng-reflect-tooltip-value='Download PDF']");
+
+              if (bupotIssuedDlButton) {
+                  bupotIssuedDlButton.click();
+              } else if (dlButton) {
+                  dlButton.click();
+              }
+          }
+          await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      console.log("Semua tombol download telah diklik.");
+    }
+
+    displayAlertPopup(message) {
+  this.removeProgressUI();
+  const popupContainer = document.createElement("div");
+  Object.assign(popupContainer.style, {
+    position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+    backgroundColor: "#fff", padding: "30px", borderRadius: "10px", color: '#333',
+    boxShadow: "0 4px 6px rgba(0, 0, 0, 0.1)", zIndex: "20002", textAlign: "center", width: "400px"
+  });
+
+  const textParagraph = document.createElement("p");
+  textParagraph.textContent = message;
+  textParagraph.style.fontSize = "18px";
+
+  const closeButton = document.createElement("button");
+  closeButton.textContent = "Tutup";
+  Object.assign(closeButton.style, {
+    margin: "10px", padding: "10px 16px", cursor: "pointer",
+    backgroundColor: "red", color: "white", fontSize: "16px", border: 'none', borderRadius: '5px'
+  });
+  closeButton.addEventListener("click", () => popupContainer.remove());
+
+  // --- TAMBAHKAN KODE BERIKUT ---
+  const creditText = document.createElement("div");
+  creditText.innerHTML = `Support by <b>@kelapapusing</b>`;
+  Object.assign(creditText.style, {
+    marginTop: "15px",
+    fontSize: "12px",
+    color: "#888",
+    borderTop: "1px solid #eee",
+    paddingTop: "10px"
+  });
+  // ------------------------------
+
+  popupContainer.appendChild(textParagraph);
+  popupContainer.appendChild(closeButton);
+  popupContainer.appendChild(creditText); // Masukkan ke dalam container
+  
+  document.body.appendChild(popupContainer);
+}
+    
+    displayFinalNotification(successCount, failedList) {
+        if (this.isDownloadCancelled && !this.downloadFinished) return; 
+
+        this.downloadFinished = true; 
+        this.stopCancelTimer(); 
+        this.removeProgressUI();
+
+        let durationText = "";
+        if (this.downloadStartTime) {
+            const endTime = Date.now();
+            const diff = endTime - this.downloadStartTime;
+            const minutes = Math.floor(diff / 60000);
+            const seconds = ((diff % 60000) / 1000).toFixed(0);
+            durationText = minutes > 0 ? `${minutes} menit ${seconds} detik` : `${seconds} detik`;
+        }
+
+        const styleSheet = document.createElement("style");
+        styleSheet.type = "text/css";
+        styleSheet.innerText = `@keyframes blink-effect { 50% { opacity: 0.6; transform: translate(-50%, -50%) scale(1.05); } }`;
+        document.head.appendChild(styleSheet);
+
+        let fireworkTopRight = document.createElement('img');
+        fireworkTopRight.src = 'https://img1.picmix.com/output/stamp/normal/5/4/2/7/727245_e454f.gif';
+        Object.assign(fireworkTopRight.style, {
+            position: 'fixed', top: '0', right: '0', width: '400px', height: 'auto', 
+            zIndex: '20002', pointerEvents: 'none', transform: 'translate(20%, -20%)'
+        });
+               
+        let successTextAnimation = document.createElement('div');
+        successTextAnimation.innerHTML = `SUKSES<br>${successCount} File`;
+        Object.assign(successTextAnimation.style, {
+            position: 'fixed', 
+            top: '20%', 
+            left: '50%', transform: 'translate(-50%, -50%)', zIndex: '20003',
+            color: 'white', fontSize: 'clamp(40px, 10vw, 80px)', fontWeight: 'bold', textAlign: 'center',
+            textShadow: '0 0 10px rgba(0,0,0,0.8), 0 0 20px #00ff00, 0 0 30px #00ff00',
+            pointerEvents: 'none', lineHeight: '1.2', animation: 'blink-effect 1s linear infinite'
+        });
+
+        const oldNotification = document.querySelector('.hanim-final-notification');
+        if (oldNotification) oldNotification.remove();
+
+        const youtubeIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="red" stroke="none" style="vertical-align: middle; margin-bottom: 2px; margin-right: 4px;"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33z"></path><polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02" fill="white"></polygon></svg>`;
+
+        // Hitung rata-rata waktu (detik per file)
+const averageTime = successCount > 0 ? (parseFloat(durationText) / successCount).toFixed(2) : 0;
+
+const messageLines = [
+    `✅ Download Selesai`, 
+    `Berhasil: ${successCount} file telah diunduh.`,
+    `⏱️ Waktu: <b>${durationText}</b>`, 
+    `⚡ Rata-rata: (<b>${averageTime}</b>) detik / file`, // Baris baru yang ditambahkan
+    `<div style="margin-top: 10px; font-size: 0.9em; color: #555;">${youtubeIcon} Support by <b>@kelapapusing</b></div>`
+];
+        if (failedList && failedList.length > 0) messageLines.push(`Gagal: ${failedList.length} file.`);
+        
+        const notification = document.createElement("div");
+        notification.className = 'hanim-final-notification';
+        Object.assign(notification.style, {
+            position: "fixed", top: "50%", left: "50%",
+            transform: "translate(-50%, -50%) scale(0.95)", backgroundColor: "#fff",
+            color: "#333", padding: "25px", borderRadius: "12px",
+            boxShadow: "0 8px 25px rgba(0, 0, 0, 0.15)", zIndex: "20001",
+            width: "400px", textAlign: 'center', fontSize: "16px",
+            lineHeight: "1.6", opacity: "0", transition: "opacity 0.3s ease, transform 0.3s ease"
+        });
+
+        const messageParagraph = document.createElement('p');
+        messageParagraph.innerHTML = messageLines.join("<br>");
+        messageParagraph.style.margin = "0 0 20px 0";
+        
+        const btnContainer = document.createElement('div');
+        Object.assign(btnContainer.style, {
+            display: 'flex', gap: '10px', justifyContent: 'center'
+        });
+
+       const closeBtn = document.createElement("button");
+closeBtn.textContent = "Tutup";
+Object.assign(closeBtn.style, {
+    flex: '1', padding: "10px", backgroundColor: "#c4302b", color: "#fff",
+    border: "none", borderRadius: "5px", cursor: "pointer", fontSize: '14px', fontWeight: 'bold'
+});
+
+// --- TAMBAHKAN KODE DI BAWAH INI ---
+const supportText = document.createElement("div");
+supportText.innerHTML = `Support by <b>@kelapapusing</b>`;
+Object.assign(supportText.style, {
+    fontSize: "10px",
+    color: "#888",
+    marginTop: "12px",
+    textAlign: "center",
+    width: "100%",
+    opacity: "0.8"
+});
+
+        const openManagerBtn = document.createElement("button");
+        openManagerBtn.textContent = "Buka Download Manager";
+        Object.assign(openManagerBtn.style, {
+            flex: '1.5', padding: "10px", backgroundColor: "#28a745", color: "#fff",
+            border: "none", borderRadius: "5px", cursor: "pointer", fontSize: '14px', fontWeight: 'bold'
+        });
+
+        const closeNotificationAndAnimations = () => {
+            if (fireworkTopRight.parentElement) fireworkTopRight.parentElement.removeChild(fireworkTopRight);
+            if (successTextAnimation.parentElement) successTextAnimation.parentElement.removeChild(successTextAnimation);
+            if (styleSheet.parentElement) styleSheet.parentElement.removeChild(styleSheet);
+            notification.style.opacity = "0";
+            notification.style.transform = "translate(-50%, -50%) scale(0.95)";
+            setTimeout(() => { if (document.body.contains(notification)) document.body.removeChild(notification); }, 300);
+        };
+
+        closeBtn.onclick = closeNotificationAndAnimations;
+        
+        openManagerBtn.onclick = () => {
+            try {
+                chrome.runtime.sendMessage({ action: "openDownloadManagerPage" });
+            } catch (e) {
+                console.warn("Gagal mengirim pesan.", e);
+            }
+            closeNotificationAndAnimations();
+        };
+
+        btnContainer.appendChild(closeBtn);
+        btnContainer.appendChild(openManagerBtn);
+
+        notification.appendChild(messageParagraph);
+        notification.appendChild(btnContainer); 
+
+        document.body.appendChild(notification);
+        document.body.appendChild(fireworkTopRight);
+        document.body.appendChild(successTextAnimation);
+        
+        setTimeout(() => {
+            notification.style.opacity = "1";
+            notification.style.transform = "translate(-50%, -50%) scale(1)";
+        }, 100);
+    }
+  } 
+  
+ new InvoiceDownloader(); 
+} // Penutup if (!window.__invoiceDownloaderInjected)
