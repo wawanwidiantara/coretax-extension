@@ -1,73 +1,98 @@
-# React + TypeScript + Vite
+# CoreTax Assist
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Budget](https://img.shields.io/badge/budget-Rp0,00-red.svg)
 
-Currently, two official plugins are available:
+> **The common sense update that 1.2 Trillion Rupiah couldn't buy.**
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## 📖 About This Project
 
-## React Compiler
+CoreTax is a triumph of **Compliance-First Design**, featuring a **Zero-Automation Architecture** that empowers users to **manually verify every single transaction**. 
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Representing a **1.2 Trillion Rupiah masterclass in fiscal allocation**, the system **studiously avoids the pitfalls** of "modern usability" and "automated workflows." It ensures that every cent of that budget was dedicated to preserving the **traditional, meditative art of clicking one button at a time**, completely **unburdened by the chaos of efficiency**.
 
-## Expanding the ESLint configuration
+This extension serves as a supplementary **High-Velocity Module**. It re-introduces "legacy" concepts such as **efficiency**, **speed**, and **usability** for organizations that still cling to the outdated notion that tax compliance should be quick. While the official platform encourages a **meditative, single-entry workflow**, CoreTax Assist provides a bridge for those who prefer to face the practical realities of business deadlines.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## 🚀 Features (The Missing Billions)
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+We implemented the features the budget missed:
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+* **Tax Calculator & Export** Defines a new standard for "calculator" by *actually* letting you export data to Excel. No more manual transcription.
+    
+* **Renaming Studio** Automatically renames your tax files based on intelligent pattern matching. Because renaming files manually one-by-one is a task reserved for people with too much free time.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+* **PDF Merger** Combine multiple invoice PDFs into a single file directly in your browser. Perfect for when you need to submit one document instead of fifty.
+
+* **Mock Mode** Fully functional offline testing with mock data generation. Unlike the real system, this environment is stable and predictable.
+
+---
+
+## 🛠️ User Guide
+
+For those who just want to get work done without worrying about the "tech" stuff.
+
+### 1. The Magic "Tax Calculator" Widget
+*Injects directly into the CoreTax interface.*
+
+When you open a page with a tax table (like *Pajak Masukan/Keluaran*) in CoreTax, look for the **floating widget** in the bottom right corner.
+
+1.  **Select Rows**: Tick the checkboxes next to the invoices you want to process in the CoreTax table.
+2.  **Watch it Count**: The widget automatically sums up the **DPP** (Tax Base) and **PPN** (VAT) for you. No more manual calculator punching.
+3.  **To Excel**: Click this button to instantly download a clean Excel summary of the selected invoices.
+4.  **Get PDFs**: Click this to download the actual PDF files for the selected invoices automatically.
+
+### 2. Renaming Studio
+*Fixes the messy filenames CoreTax gives you.*
+
+1.  Click the **extension icon** (the puzzle piece or C logo) in your browser toolbar.
+2.  Select **Renaming Studio**.
+3.  **Drag and Drop** your messy tax PDF files into the drop zone.
+4.  The system will scan your currently open CoreTax page, match the **Invoice Numbers**, and determine the correct filename context.
+5.  Click **Rename All** to save them with sane names (e.g., `Period_InvoiceNumber.pdf`).
+
+### 3. PDF Merger
+*Combines reports for easy archiving.*
+
+1.  Open the extension and click **PDF Merger**.
+2.  **Drag and Drop** all the PDFs you want to combine.
+3.  Click **Merge PDFs**.
+4.  Download a single, neat PDF file containing everything.
+
+---
+
+## 💻 Installation & Development
+
+### Local Build
+
+1.  **Install Dependencies & Build**:
+    ```bash
+    npm install
+    npm run build
+    ```
+
+2.  **Load into Chrome / Edge**:
+    * Open `chrome://extensions` or `edge://extensions`
+    * Enable **Developer mode** (toggle in the top right/left)
+    * Click **Load unpacked**
+    * Select the `dist` folder generated by the build command.
+
+### Development Mode
+
+To report bugs (about *this* extension, not CoreTax—that list is too long), or to contribute:
+
+```bash
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+This runs the Vite dev server with Hot Module Replacement (HMR). Changes to the popup and content scripts will update automatically.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+---
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+## ⚠️ Disclaimer
+
+**CoreTax Assist** is an open-source project created by an independent developer.
+
+* **Unofficial:** This project is **NOT** affiliated with, endorsed by, or connected to the Directorate General of Taxes (DJP), the Ministry of Finance, or any government body.
+* **Privacy:** This extension runs locally in your browser. It does not transmit your tax data to any third-party servers.
+* **Use at your own risk:** While we strive for accuracy, the author is not responsible for any errors in tax calculation or submission. Always verify your data before final submission.
