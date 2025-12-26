@@ -6,6 +6,14 @@
 
 > **The common sense update that 1.2 Trillion Rupiah couldn't buy.**
 
+## ⚠️ Disclaimer
+
+**CoreTax Assist** is an open-source project created by an independent developer.
+
+* **NOT A GOVERNMENT TOOL:** This software is an independent, open-source project. It is **NOT** affiliated with, endorsed by, or connected to the Directorate General of Taxes (DJP), the Ministry of Finance, or any state entity.
+* **CLIENT-SIDE ONLY:** This extension functions strictly as a **local browser overlay**. It does not intercept, decrypt, or transmit data to any third-party server. It simply reads what is already visible on your screen and organizes it.
+* **NO AUTOMATED SUBMISSIONS:** This tool does **not** automate the submission of tax returns. It is a file management and calculation utility only.
+
 ## 📖 About This Project
 
 CoreTax is a triumph of **Compliance-First Design**, featuring a **Zero-Automation Architecture** that empowers users to **manually verify every single transaction**. 
@@ -26,7 +34,6 @@ We implemented the features the budget missed:
 
 * **Mock Mode** Fully functional offline testing with mock data generation. Unlike the real system, this environment is stable and predictable.
 
----
 
 ## 🛠️ User Guide
 
@@ -59,7 +66,6 @@ When you open a page with a tax table (like *Pajak Masukan/Keluaran*) in CoreTax
 3.  Click **Merge PDFs**.
 4.  Download a single, neat PDF file containing everything.
 
----
 
 ## 💻 Installation & Development
 
@@ -87,12 +93,10 @@ npm run dev
 
 This runs the Vite dev server with Hot Module Replacement (HMR). Changes to the popup and content scripts will update automatically.
 
----
 
-## ⚠️ Disclaimer
+## ⚠️ Liability Limitation
 
-**CoreTax Assist** is an open-source project created by an independent developer.
+**Use at your own risk.**
+This software is provided "as is," without warranty of any kind. The authors are not responsible for any errors in your tax reporting. Always verify the calculations produced by this tool against your official records.
 
-* **Unofficial:** This project is **NOT** affiliated with, endorsed by, or connected to the Directorate General of Taxes (DJP), the Ministry of Finance, or any government body.
-* **Privacy:** This extension runs locally in your browser. It does not transmit your tax data to any third-party servers.
-* **Use at your own risk:** While we strive for accuracy, the author is not responsible for any errors in tax calculation or submission. Always verify your data before final submission.
+By using this tool, you acknowledge that you are simply using a glorified calculator and file renamer, and not "hacking" anything.
