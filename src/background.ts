@@ -1,12 +1,24 @@
 import { DownloadManager } from "./features/downloader/DownloadManager";
 
+interface DownloadFile {
+    url: string;
+    filename: string;
+}
+
+interface QueueDownloadsMessage {
+    type: 'QUEUE_DOWNLOADS';
+    data: DownloadFile[];
+}
+
+type ExtensionMessage = QueueDownloadsMessage;
+
 const manager = new DownloadManager();
 
 // Listen for messages from Content Script or Popup
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendResponse) => {
     if (message.type === 'QUEUE_DOWNLOADS') {
-        const files = message.data; // Expecting array of { url, filename }
-        files.forEach((f: any) => {
+        const files = message.data;
+        files.forEach((f) => {
             manager.addToQueue({
                 url: f.url,
                 filename: f.filename,
