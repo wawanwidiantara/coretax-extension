@@ -1,0 +1,31 @@
+{
+    "manifest_version": 3,
+    "name": "Coretax Extension",
+    "version": "1.0.0",
+    "action": {
+        "default_popup": "index.html"
+    },
+    "background": {
+        "service_worker": "src/background.ts",
+        "type": "module"
+    },
+    "content_scripts": [
+        {
+            "js": [
+                "src/content.ts"
+            ],
+            "matches": [
+                "https://coretaxdjp.pajak.go.id/*"
+            ]
+        }
+    ],
+    "permissions": [
+        "downloads",
+        "storage",
+        "scripting",
+        "activeTab"
+    ],
+    "host_permissions": [
+        "https://coretaxdjp.pajak.go.id/*"
+    ]
+}
