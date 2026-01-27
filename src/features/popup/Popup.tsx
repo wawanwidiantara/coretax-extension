@@ -3,7 +3,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
-    FileText,
     Settings,
     Merge,
     Home,
@@ -12,11 +11,11 @@ import {
     type LucideIcon,
 } from 'lucide-react';
 import { Toaster } from '@/components/ui/sonner';
-import RenamingStudio from '../renaming/RenamingStudio';
+
 import PDFMerger from '../merger/PDFMerger';
 import SettingsViewComponent from '../settings/Settings';
 
-type View = 'dashboard' | 'renaming' | 'merger' | 'settings';
+type View = 'dashboard' | 'merger' | 'settings';
 
 const Dashboard = ({ onNavigate }: { onNavigate: (view: View) => void }) => (
     <div className="space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
@@ -44,20 +43,6 @@ const Dashboard = ({ onNavigate }: { onNavigate: (view: View) => void }) => (
         <div className="space-y-1.5">
             <h3 className="text-[10px] font-bold text-brand-blue/70 uppercase tracking-wider pl-1 font-mono">Quick Tools</h3>
             <div className="grid grid-cols-1 gap-2">
-                <Button
-                    variant="outline"
-                    className="justify-start h-auto py-2.5 px-3 relative overflow-hidden group border-brand-blue/20 bg-white hover:bg-brand-blue/5 hover:border-brand-blue/40 transition-all shadow-sm"
-                    onClick={() => onNavigate('renaming')}
-                >
-                    <div className="h-8 w-8 rounded-md bg-brand-blue/10 text-brand-blue flex items-center justify-center mr-3 group-hover:scale-105 transition-transform shadow-inner">
-                        <FileText className="h-4 w-4" />
-                    </div>
-                    <div className="flex flex-col items-start gap-0.5">
-                        <span className="font-semibold text-xs text-brand-blue">Renaming Studio</span>
-                        <span className="text-[10px] text-slate-500 font-normal">Match & rename tax files</span>
-                    </div>
-                </Button>
-
                 <Button
                     variant="outline"
                     className="justify-start h-auto py-2.5 px-3 relative overflow-hidden group border-brand-yellow/50 bg-white hover:bg-brand-yellow/10 hover:border-brand-yellow/80 transition-all shadow-sm"
@@ -116,11 +101,7 @@ const Popup = () => {
             <main className="flex-1 overflow-hidden relative p-3 bg-slate-50/30">
                 {activeView === 'dashboard' && <Dashboard onNavigate={setActiveView} />}
 
-                {activeView === 'renaming' && (
-                    <div className="h-full animate-in fade-in slide-in-from-right-8 duration-300">
-                        <RenamingStudio />
-                    </div>
-                )}
+
 
                 {activeView === 'merger' && (
                     <div className="h-full animate-in fade-in slide-in-from-right-8 duration-300">
@@ -138,12 +119,7 @@ const Popup = () => {
                     icon={Home}
                     label="Home"
                 />
-                <NavButton
-                    active={activeView === 'renaming'}
-                    onClick={() => setActiveView('renaming')}
-                    icon={FileText}
-                    label="Rename"
-                />
+
                 <NavButton
                     active={activeView === 'merger'}
                     onClick={() => setActiveView('merger')}

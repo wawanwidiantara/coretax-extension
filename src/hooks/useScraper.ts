@@ -20,9 +20,9 @@ export const useScraper = () => {
                 const cells = row.querySelectorAll('td');
                 // Assuming standard table structure: DPP at index 4, PPN at index 5
                 // Validation against real DOM structure is required for production use
-                if (cells.length > 5) {
-                    const dppText = cells[4]?.textContent || "0";
-                    const ppnText = cells[5]?.textContent || "0";
+                if (cells.length > 13) {
+                    const dppText = cells[11]?.textContent || "0";
+                    const ppnText = cells[13]?.textContent || "0";
 
                     dpp += parseCurrency(dppText);
                     ppn += parseCurrency(ppnText);

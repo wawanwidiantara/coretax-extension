@@ -5,6 +5,7 @@ import { useState, useRef } from 'react';
 import { PDFDocument } from 'pdf-lib';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
+import JSZip from 'jszip';
 
 interface FileItem {
     id: string;
@@ -58,34 +59,94 @@ const PDFMerger = () => {
         setFiles(prev => prev.filter((_, i) => i !== index));
     };
 
+
+
     const handleMerge = async () => {
         if (files.length === 0) return;
         setIsMerging(true);
 
         try {
-            const mergedPdf = await PDFDocument.create();
+            // 1. Group files by pattern: MMYYYY-NPWP
+            const groups: Record<string, FileItem[]> = {};
+            let hasGroups = false;
 
-            for (const item of files) {
-                const arrayBuffer = await item.file.arrayBuffer();
-                const pdf = await PDFDocument.load(arrayBuffer);
-                const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
-                copiedPages.forEach((page) => mergedPdf.addPage(page));
+            files.forEach(item => {
+                // Matches "112025-1234..." in "112025-1234... (1).pdf"
+                const match = item.file.name.match(/^(\d{6}-\d+)/);
+                const key = match ? match[1] : 'Uncategorized';
+
+                if (!groups[key]) groups[key] = [];
+                groups[key].push(item);
+
+                if (key !== 'Uncategorized') hasGroups = true;
+            });
+
+            const groupKeys = Object.keys(groups);
+            const isMultiBatch = groupKeys.length > 1 && hasGroups;
+
+            if (isMultiBatch) {
+                // ZIP MODE
+                const zip = new JSZip();
+
+                for (const key of groupKeys) {
+                    const groupFiles = groups[key];
+                    if (groupFiles.length === 0) continue;
+
+                    const mergedPdf = await PDFDocument.create();
+                    // Sort by name ensures (1), (2) order usually
+                    const sortedFiles = [...groupFiles].sort((a, b) => a.file.name.localeCompare(b.file.name));
+
+                    for (const item of sortedFiles) {
+                        const arrayBuffer = await item.file.arrayBuffer();
+                        const pdf = await PDFDocument.load(arrayBuffer);
+                        const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+                        copiedPages.forEach((page) => mergedPdf.addPage(page));
+                    }
+
+                    const pdfBytes = await mergedPdf.save();
+                    zip.file(`${key}.pdf`, pdfBytes);
+                }
+
+                const content = await zip.generateAsync({ type: 'blob' });
+                const url = URL.createObjectURL(content);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `CoreTax_Merged_Batch_${new Date().getTime()}.zip`;
+                a.click();
+                URL.revokeObjectURL(url);
+
+                toast.success(`Merged ${groupKeys.length} groups!`, { description: "Downloaded as ZIP." });
+
+            } else {
+                // SINGLE file mode (Classic)
+                const mergedPdf = await PDFDocument.create();
+
+                // Sort by name just in case
+                const sortedFiles = [...files].sort((a, b) => a.file.name.localeCompare(b.file.name));
+
+                for (const item of sortedFiles) {
+                    const arrayBuffer = await item.file.arrayBuffer();
+                    const pdf = await PDFDocument.load(arrayBuffer);
+                    const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+                    copiedPages.forEach((page) => mergedPdf.addPage(page));
+                }
+
+                const pdfBytes = await mergedPdf.save();
+                const blob = new Blob([pdfBytes as unknown as BlobPart], { type: 'application/pdf' });
+
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                // Use group name if strictly 1 group
+                const singleKey = groupKeys[0] !== 'Uncategorized' ? groupKeys[0] : `CoreTax_Merged_${new Date().getTime()}`;
+                a.download = `${singleKey}.pdf`;
+                a.click();
+                URL.revokeObjectURL(url);
+
+                toast.success("Merge Complete!", { description: "Downloaded single PDF." });
             }
 
-            const pdfBytes = await mergedPdf.save();
-            const blob = new Blob([pdfBytes as unknown as BlobPart], { type: 'application/pdf' });
-
-            // Download
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `CoreTax_Merged_${new Date().getTime()}.pdf`;
-            a.click();
-            URL.revokeObjectURL(url);
-
-            // Cleanup
             setFiles([]);
-            toast.success("Merge Complete!", { description: "Your file has been downloaded." });
         } catch (error) {
             console.error("Merge failed", error);
             toast.error("Failed to merge PDFs", { description: "Please ensure all files are valid PDFs." });
@@ -108,8 +169,9 @@ const PDFMerger = () => {
             </div>
 
             <div className={`
-                flex-1 border-2 border-dashed rounded-xl flex flex-col items-center justify-center p-4 text-center transition-all m-1 bg-slate-50/50
+                flex-1 border-2 border-dashed rounded-xl flex flex-col p-4 text-center transition-all m-1 bg-slate-50/50 min-h-0
                 ${isDragging ? 'border-brand-yellow bg-brand-yellow/5' : 'border-slate-200'}
+                ${files.length === 0 ? 'items-center justify-center' : 'items-stretch justify-start overflow-hidden'}
             `}
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
