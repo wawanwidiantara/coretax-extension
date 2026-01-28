@@ -1,11 +1,13 @@
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Upload, File as FileIcon, Plus, X } from 'lucide-react';
+import { Upload, File as FileIcon, Plus, X, Settings } from 'lucide-react';
 import { useState, useRef } from 'react';
 import { PDFDocument } from 'pdf-lib';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
 import JSZip from 'jszip';
+import { parseFilename, getGroupingKey, extractTokens } from '@/lib/filename-utils';
+import { useEffect } from 'react';
 
 interface FileItem {
     id: string;
@@ -18,6 +20,37 @@ const PDFMerger = () => {
     const [isMerging, setIsMerging] = useState(false);
     const [isDragging, setIsDragging] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    // Settings
+    const [showSettings, setShowSettings] = useState(false);
+    const [pattern, setPattern] = useState(localStorage.getItem('coretax_filename_format') || '{mmyy}-{npwp}-{invoice}');
+    const [groupByKeys, setGroupByKeys] = useState<string[]>([]);
+
+    // Auto-update default grouping keys when pattern changes
+    useEffect(() => {
+        const tokens = extractTokens(pattern);
+        // Default: everything except invoice
+        setGroupByKeys(tokens.filter(t => t !== 'invoice'));
+    }, [pattern]);
+
+    const handlePatternChange = (val: string) => {
+        let clean = val;
+        // Strip .pdf if user adds it, consistent with Calculator
+        if (clean.toLowerCase().endsWith('.pdf')) clean = clean.slice(0, -4);
+        setPattern(clean);
+        // We don't necessarily save to global localStorage here to avoid fighting with Calculator, 
+        // but maybe we should? Let's just keep local state for now or sync?
+        // User asked for "plug and play", implying sync.
+        localStorage.setItem('coretax_filename_format', clean);
+    };
+
+    const toggleGroupKey = (key: string) => {
+        setGroupByKeys(prev =>
+            prev.includes(key)
+                ? prev.filter(k => k !== key)
+                : [...prev, key]
+        );
+    };
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files) {
@@ -71,9 +104,19 @@ const PDFMerger = () => {
             let hasGroups = false;
 
             files.forEach(item => {
-                // Matches "1125-1234..." (MMYY) or "112025-1234..." (MMYYYY)
-                const match = item.file.name.match(/^(\d{4,6}-\d+)/);
-                const key = match ? match[1] : 'Uncategorized';
+                // Dynamic parsing
+                const metadata = parseFilename(item.file.name, pattern);
+                let key = 'Uncategorized';
+
+                if (metadata) {
+                    key = getGroupingKey(metadata, groupByKeys);
+                } else {
+                    // Fallback to legacy check just in case, or stick to Uncategorized?
+                    // Let's stick to Uncategorized to encourage correct pattern usage.
+                    // Or try a basic fallback for MMYYYY-NPWP if pattern fails?
+                    // For now, strict:
+                    console.log(`Failed to parse ${item.file.name} with pattern ${pattern}`);
+                }
 
                 if (!groups[key]) groups[key] = [];
                 groups[key].push(item);
@@ -166,6 +209,60 @@ const PDFMerger = () => {
                 <Badge variant={files.length > 0 ? "outline" : "secondary"} className="text-[10px] h-5">
                     {files.length} Files
                 </Badge>
+            </div>
+
+            {/* Settings Toggle */}
+            <div className="px-1">
+                <div className="flex justify-end">
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-[10px] text-slate-400 hover:text-brand-blue gap-1"
+                        onClick={() => setShowSettings(!showSettings)}
+                    >
+                        <Settings className="h-3 w-3" />
+                        {showSettings ? 'Hide Settings' : 'Grouping Settings'}
+                    </Button>
+                </div>
+
+                {showSettings && (
+                    <div className="bg-slate-50 p-2 rounded border border-slate-200 mb-2 animate-in slide-in-from-top-2">
+                        <label className="text-[10px] font-bold text-slate-500 block mb-1">
+                            Input Filename Pattern
+                        </label>
+                        <div className="flex items-center gap-1">
+                            <input
+                                type="text"
+                                className="w-full text-xs p-1.5 rounded border border-slate-300 focus:border-brand-blue outline-none font-mono text-slate-700"
+                                value={pattern}
+                                onChange={(e) => handlePatternChange(e.target.value)}
+                                placeholder="{mmyy}-{npwp}-{invoice}"
+                            />
+                            <span className="text-xs font-mono text-slate-400">.pdf</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1">
+                            Files will be grouped by matching tokens (excluding {'{invoice}'}).
+                        </p>
+
+                        <div className="mt-2 pt-2 border-t border-slate-200">
+                            <label className="text-[10px] font-bold text-slate-500 block mb-1">
+                                Group By:
+                            </label>
+                            <div className="flex flex-wrap gap-1">
+                                {extractTokens(pattern).map(token => (
+                                    <Badge
+                                        key={token}
+                                        variant={groupByKeys.includes(token) ? "default" : "outline"}
+                                        className={`cursor-pointer text-[10px] h-5 ${!groupByKeys.includes(token) ? 'text-slate-400 hover:text-slate-600' : ''}`}
+                                        onClick={() => toggleGroupKey(token)}
+                                    >
+                                        {token}
+                                    </Badge>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
 
             <div className={`
@@ -263,7 +360,7 @@ const PDFMerger = () => {
                     </>
                 )}
             </Button>
-        </div>
+        </div >
     );
 };
 
