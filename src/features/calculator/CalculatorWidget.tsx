@@ -1,5 +1,5 @@
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Download, Calculator, X } from 'lucide-react';
@@ -10,9 +10,15 @@ const CalculatorWidget = () => {
     const [isVisible, setIsVisible] = useState(true);
     const { dppTotal, ppnTotal, selectedCount } = useScraperStore();
 
+    // PDF state
+    const [pdfStatus, setPdfStatus] = useState<'idle' | 'running' | 'cancelled'>('idle');
+    const [pdfProgress, setPdfProgress] = useState({ current: 0, total: 0 });
+    const pdfAbortController = useRef<boolean>(false); // Simple boolean flag for loop interruption
+
     // Formatting helper
     const fmt = (n: number) => new Intl.NumberFormat('id-ID').format(n);
 
+    // --- EXPORT CURRENT PAGE ACTIONS ---
     const handleExport = () => {
         // Mock data logic: if no rows selected, assume we are testing and generate mock data
         const count = selectedCount || 1;
@@ -33,6 +39,7 @@ const CalculatorWidget = () => {
         });
     };
 
+    // --- PDF DOWNLOAD ACTIONS ---
     const handleDownloadPDFs = async () => {
         // 1. Bypass window.confirm which blocks the download flow
         const bypassScript = document.createElement('script');
@@ -40,8 +47,7 @@ const CalculatorWidget = () => {
         (document.head || document.documentElement).appendChild(bypassScript);
         bypassScript.remove();
 
-        // 2. Collect unique IDs (Invoice Numbers) from currently checked rows
-        // We do this UP FRONT because the table refresh clears the checkboxes.
+        // 2. Collect unique IDs (Invoice Numbers)
         const checkedRows = document.querySelectorAll('table tbody tr input[type="checkbox"]:checked');
         const targetIds: string[] = [];
         const fileMap: Record<string, { date: string; npwp: string; name: string }> = {};
@@ -50,39 +56,24 @@ const CalculatorWidget = () => {
             const row = checkbox.closest('tr');
             if (!row) return;
 
-            // "Nomor Faktur Pajak" is reliably in the 6th column (index 5) based on HTML reference
+            // "Nomor Faktur Pajak" is reliably in the 6th column (index 5)
             const cells = row.querySelectorAll('td');
             if (cells.length > 6) {
-                // Column 5: Invoice Number (ID)
                 const cleanId = cells[5].innerText.replace(/Nomor Faktur Pajak/gi, '').trim();
-
-                // Column 6: Date (30-11-2025)
-                const dateText = cells[6].innerText.replace(/Tanggal Faktur Pajak/gi, '').trim(); // e.g. "30-11-2025" or "2025-11-30" depending on locale
-
-                // Column 2: NPWP
+                const dateText = cells[6].innerText.replace(/Tanggal Faktur Pajak/gi, '').trim();
                 const npwpText = cells[2].innerText.replace(/NPWP Pembeli.*/gi, '').trim();
-
-                // Column 3: Name
                 const nameText = cells[3].innerText.replace(/Nama Pembeli/gi, '').trim();
 
                 if (cleanId) {
                     targetIds.push(cleanId);
-                    fileMap[cleanId] = {
-                        date: dateText,
-                        npwp: npwpText,
-                        name: nameText
-                    };
+                    fileMap[cleanId] = { date: dateText, npwp: npwpText, name: nameText };
                 }
             }
         });
 
-        // Send metadata map to background script for auto-renaming
+        // Register metadata
         if (Object.keys(fileMap).length > 0) {
-            try {
-                chrome.runtime.sendMessage({ type: 'REGISTER_FILE_MAP', data: fileMap });
-            } catch (e) {
-                console.error("Failed to send file map to background", e);
-            }
+            try { chrome.runtime.sendMessage({ type: 'REGISTER_FILE_MAP', data: fileMap }); } catch (e) { /* ignore */ }
         }
 
         if (targetIds.length === 0) {
@@ -90,14 +81,21 @@ const CalculatorWidget = () => {
             return;
         }
 
-        toast.info(`Queued ${targetIds.length} invoices...`, { description: "Processing downloads. Table may refresh." });
+        // START DOWNLOAD LOOP
+        setPdfStatus('running');
+        setPdfProgress({ current: 0, total: targetIds.length });
+        pdfAbortController.current = false;
 
         let successCount = 0;
 
-        // 3. Process by ID, searching the DOM afresh each time
-        for (const targetId of targetIds) {
-            // Find the row that matches this ID
-            // We search ALL rows because the position might have changed or index is unreliable
+        for (const [index, targetId] of targetIds.entries()) {
+            if (pdfAbortController.current) {
+                break; // STOP
+            }
+
+            setPdfProgress({ current: index + 1, total: targetIds.length });
+
+            // Find row dynamically
             const currentRows = Array.from(document.querySelectorAll('table tbody tr'));
             const targetRow = currentRows.find(row => {
                 const cells = row.querySelectorAll('td');
@@ -107,28 +105,36 @@ const CalculatorWidget = () => {
             });
 
             if (!targetRow) {
-                console.warn(`Could not find row for Invoice ${targetId} - it may have moved to another page.`);
+                console.warn(`Could not find row for Invoice ${targetId}`);
                 continue;
             }
 
             const downloadBtn = targetRow.querySelector('#DownloadButton') as HTMLButtonElement;
             if (downloadBtn) {
-                // Visual feedback
                 const originalBg = (targetRow as HTMLElement).style.backgroundColor;
                 (targetRow as HTMLElement).style.backgroundColor = '#dcfce7'; // light green
 
                 downloadBtn.click();
                 successCount++;
 
-                // Wait 2.5s for the refresh to happen and settle
+                // Wait for download trigger + debounce
                 await new Promise(resolve => setTimeout(resolve, 2500));
 
-                // Restore bg (if row still exists)
                 try { (targetRow as HTMLElement).style.backgroundColor = originalBg || ''; } catch (e) { /* ignore */ }
             }
         }
 
-        toast.success("Batch Sequence Finished", { description: `Processed ${successCount} of ${targetIds.length} requests.` });
+        setPdfStatus('idle');
+        if (pdfAbortController.current) {
+            toast.info("Download sequence cancelled.");
+        } else {
+            toast.success("Batch Sequence Finished", { description: `Processed ${successCount} of ${targetIds.length} requests.` });
+        }
+    };
+
+    const handleCancelPdf = () => {
+        pdfAbortController.current = true;
+        setPdfStatus('cancelled'); // UI feedback immediately
     };
 
     if (!isVisible) return null;
@@ -169,13 +175,23 @@ const CalculatorWidget = () => {
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">
-                        <Button size="sm" className="w-full bg-brand-yellow text-brand-blue hover:bg-brand-yellow/90 font-semibold" onClick={handleExport}>
+                        {/* Single Page Excel */}
+                        <Button size="sm" className="w-full bg-brand-yellow text-brand-blue hover:bg-brand-yellow/90 font-semibold" onClick={handleExport} disabled={pdfStatus === 'running'}>
                             <Download className="mr-2 h-3 w-3" />
                             To Excel
                         </Button>
-                        <Button size="sm" variant="outline" className="w-full border-slate-200 text-slate-600 bg-white hover:bg-slate-50 hover:text-brand-blue" onClick={handleDownloadPDFs}>
-                            Get PDFs
-                        </Button>
+
+                        {/* PDF Download with Cancel */}
+                        {pdfStatus === 'running' ? (
+                            <Button size="sm" variant="destructive" className="w-full" onClick={handleCancelPdf}>
+                                <X className="mr-2 h-3 w-3" />
+                                Stop ({pdfProgress.current}/{pdfProgress.total})
+                            </Button>
+                        ) : (
+                            <Button size="sm" variant="outline" className="w-full border-slate-200 text-slate-600 bg-white hover:bg-slate-50 hover:text-brand-blue" onClick={handleDownloadPDFs}>
+                                Get PDFs
+                            </Button>
+                        )}
                     </div>
                 </div>
             </Card>
