@@ -1,45 +1,18 @@
 import { useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
-    Settings,
     Merge,
     Home,
-    Zap,
-    Download,
     type LucideIcon,
 } from 'lucide-react';
 import { Toaster } from '@/components/ui/sonner';
 
 import PDFMerger from '../merger/PDFMerger';
-import SettingsViewComponent from '../settings/Settings';
 
-type View = 'dashboard' | 'merger' | 'settings';
+type View = 'dashboard' | 'merger';
 
 const Dashboard = ({ onNavigate }: { onNavigate: (view: View) => void }) => (
     <div className="space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
-        <div className="grid grid-cols-2 gap-2">
-            <Card className="items-center justify-center bg-white border-brand-blue/10 shadow-sm hover:shadow-md transition-shadow cursor-default">
-                <CardContent className="p-3 flex flex-col items-center justify-center text-center space-y-1">
-                    <div className="h-7 w-7 rounded-full bg-brand-blue/10 flex items-center justify-center mb-0.5">
-                        <Zap className="h-3.5 w-3.5 text-brand-blue" />
-                    </div>
-                    <span className="text-[10px] font-semibold text-brand-blue">Content Script</span>
-                    <Badge variant="default" className="h-4 px-1.5 text-[9px] bg-brand-blue text-white hover:bg-brand-blue/90 border-none shadow-none">Active</Badge>
-                </CardContent>
-            </Card>
-            <Card className="items-center justify-center bg-white border-brand-blue/10 shadow-sm hover:shadow-md transition-shadow cursor-default">
-                <CardContent className="p-3 flex flex-col items-center justify-center text-center space-y-1">
-                    <div className="h-7 w-7 rounded-full bg-emerald-500/10 flex items-center justify-center mb-0.5">
-                        <Download className="h-3.5 w-3.5 text-emerald-600" />
-                    </div>
-                    <span className="text-[10px] font-semibold text-brand-blue">Queue Worker</span>
-                    <Badge variant="outline" className="h-4 px-1.5 text-[9px] text-emerald-700 border-emerald-300 bg-emerald-50/50">Idle</Badge>
-                </CardContent>
-            </Card>
-        </div>
-
         <div className="space-y-1.5">
             <h3 className="text-[10px] font-bold text-brand-blue/70 uppercase tracking-wider pl-1 font-mono">Quick Tools</h3>
             <div className="grid grid-cols-1 gap-2">
@@ -58,28 +31,10 @@ const Dashboard = ({ onNavigate }: { onNavigate: (view: View) => void }) => (
                 </Button>
             </div>
         </div>
-
-        <Card className="bg-slate-50/50 border-dashed border-brand-blue/20 shadow-none">
-            <CardHeader className="p-3 pb-1">
-                <CardTitle className="text-xs font-medium text-brand-blue/70">Recent Activity</CardTitle>
-            </CardHeader>
-            <CardContent className="p-3 pt-2">
-                <p className="text-xs text-slate-500 text-center py-2">No recent actions recorded.</p>
-            </CardContent>
-        </Card>
     </div>
 );
 
-const SettingsView = () => (
-    <div className="h-full flex flex-col space-y-4 p-1 animate-in fade-in slide-in-from-right-4 duration-300">
-        <div className="flex items-center justify-between px-1">
-            <h2 className="text-lg font-semibold tracking-tight text-brand-blue">Settings</h2>
-        </div>
-        <div className="flex-1 overflow-auto">
-            <SettingsViewComponent />
-        </div>
-    </div>
-);
+// SettingsView removed
 
 const Popup = () => {
     const [activeView, setActiveView] = useState<View>('dashboard');
@@ -109,7 +64,7 @@ const Popup = () => {
                     </div>
                 )}
 
-                {activeView === 'settings' && <SettingsView />}
+
             </main>
 
             <nav className="h-12 border-t border-brand-blue/10 bg-white flex items-center justify-around px-2 shrink-0 shadow-[0_-1px_3px_rgba(0,0,0,0.02)]">
@@ -126,12 +81,7 @@ const Popup = () => {
                     icon={Merge}
                     label="Merge"
                 />
-                <NavButton
-                    active={activeView === 'settings'}
-                    onClick={() => setActiveView('settings')}
-                    icon={Settings}
-                    label="Settings"
-                />
+
             </nav>
         </div>
     );
