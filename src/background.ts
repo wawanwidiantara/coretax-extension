@@ -5,7 +5,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'REGISTER_FILE_MAP') {
         // Merge new data into the existing map
         invoiceMetadataMap = { ...invoiceMetadataMap, ...message.data };
-        console.log(`[Background] Registered ${Object.keys(message.data).length} invoice metadata entries.`);
         sendResponse({ success: true });
     }
     return true;
@@ -48,7 +47,6 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
                 // User requested: "{MMYY}-{npwp}-{invoiceNo}.pdf"
                 const newFilename = `${formattedDate}-${safeNpwp}-${matchedInvoice}.pdf`;
 
-                console.log(`[Background] Renaming ${filename} -> ${newFilename}`);
                 suggest({ filename: newFilename, conflictAction: 'uniquify' });
                 return;
             }
@@ -69,15 +67,14 @@ chrome.runtime.onMessage.addListener((message, sender) => {
             chrome.scripting.executeScript({
                 target: { tabId: sender.tab.id },
                 world: 'MAIN',
+                // Inject override to bypass confirm/alert dialogs blocking automated downloads
                 func: () => {
                     // @ts-ignore
                     window.confirm = function () { return true; };
                     // @ts-ignore
                     window.alert = function () { return true; };
                 }
-            }).catch(err => console.error("Failed to inject bypass:", err));
+            }).catch(() => { /* ignore injection errors */ });
         }
     }
 });
-
-console.log("Background service worker active with Auto-Rename");

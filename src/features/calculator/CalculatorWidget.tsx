@@ -20,22 +20,67 @@ const CalculatorWidget = () => {
 
     // --- EXPORT CURRENT PAGE ACTIONS ---
     const handleExport = () => {
-        // Mock data logic: if no rows selected, assume we are testing and generate mock data
-        const count = selectedCount || 1;
-        const isMock = selectedCount === 0;
+        if (!selectedCount || selectedCount === 0) {
+            toast.warning("No rows selected", { description: "Please select rows to export." });
+            return;
+        }
 
-        const mockData = Array.from({ length: count }).map((_, i) => ({
-            invoiceNumber: `010.000-24.0000000${i}`,
-            taxPeriod: '12-2024',
-            transactionDate: '2024-12-26',
-            // If dppTotal is 0 (mock), generate random amounts between 1M and 10M
-            dpp: isMock ? Math.floor(Math.random() * 9000000) + 1000000 : dppTotal / count,
-            ppn: isMock ? Math.floor(Math.random() * 900000) + 100000 : ppnTotal / count
-        }));
+        // Helper to cleanly extract text from cells that contain hidden titles
+        const extractText = (cell: Element | undefined) => {
+            if (!cell) return "";
+            // Clone to avoid modifying DOM
+            const clone = cell.cloneNode(true) as HTMLElement;
+            // Remove the title span (.p-column-title)
+            const titleSpan = clone.querySelector('.p-column-title');
+            if (titleSpan) titleSpan.remove();
+            return clone.innerText.trim();
+        };
+
+        const parseAmount = (str: string) => {
+            // Remove dots, replace comma with dot (Indonesian format)
+            // e.g. "157.500.000" -> 157500000
+            // e.g. "1.234,56" -> 1234.56
+            if (!str) return 0;
+            const clean = str.replace(/\./g, '').replace(',', '.');
+            return parseFloat(clean) || 0;
+        };
+
+        const checkedRows = document.querySelectorAll('table tbody tr input[type="checkbox"]:checked');
+        const exportData: any[] = [];
+
+        checkedRows.forEach((checkbox) => {
+            const row = checkbox.closest('tr');
+            if (!row) return;
+            const cells = row.querySelectorAll('td');
+
+            // CoreTax Table Structure (based on analysis):
+            // 2: NPWP
+            // 3: Name
+            // 5: Invoice Number
+            // 6: Date
+            // 11: DPP
+            // 13: PPN
+            if (cells.length > 13) {
+                exportData.push({
+                    npwp: extractText(cells[2]),
+                    buyerName: extractText(cells[3]),
+                    invoiceNumber: extractText(cells[5]),
+                    transactionDate: extractText(cells[6]),
+                    dpp: parseAmount(extractText(cells[11])),
+                    ppn: parseAmount(extractText(cells[13])),
+                    taxPeriod: extractText(cells[7]) // Column 7 based on header check (Masa Pajak)
+                });
+            }
+        });
+
+        if (exportData.length === 0) {
+            toast.error("Could not extract data from selected rows.");
+            return;
+        }
 
         import('@/services/excel-export').then(mod => {
-            mod.exportToExcel(mockData, isMock ? `CoreTax_Mock_Export_${Date.now()}.xlsx` : undefined);
-            if (isMock) toast.info("Exported mock Excel file for testing.");
+            mod.exportToExcel(exportData, `CoreTax_Export_${Date.now()}.xlsx`);
+            toast.success(`Exported ${exportData.length} rows.`);
         });
     };
 
