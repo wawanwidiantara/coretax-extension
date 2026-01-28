@@ -1,10 +1,14 @@
-// Map: InvoiceNumber -> { date, npwp, name }
-let invoiceMetadataMap: Record<string, { date: string; npwp: string; name: string }> = {};
+// Map: InvoiceNumber -> { date, npwp, name, period? }
+let invoiceMetadataMap: Record<string, { date: string; npwp: string; name: string; period?: string }> = {};
+let filenameFormat = '{mmyy}-{npwp}-{invoice}.pdf';
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'REGISTER_FILE_MAP') {
         // Merge new data into the existing map
         invoiceMetadataMap = { ...invoiceMetadataMap, ...message.data };
+        if (message.format) {
+            filenameFormat = message.format;
+        }
         sendResponse({ success: true });
     }
     return true;
@@ -28,26 +32,42 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
         if (matchedInvoice) {
             const meta = invoiceMetadataMap[matchedInvoice];
             if (meta) {
-                // Desired format: MMYYYY-NPWP.pdf (e.g. 112025-0668...)
-                // Input format from scraper: DD-MM-YYYY (e.g. 19-11-2025) or similar
-                let formattedDate = meta.date.replace(/[^0-9-]/g, '');
+                // Helpers for date parsing
+                // Input format from scraper: DD-MM-YYYY (e.g. 19-11-2025) usually
+                const dateParts = meta.date.replace(/[^0-9-]/g, '').split('-');
+                let mmyy = '';
+                let year = '';
 
-                // Try to parse DD-MM-YYYY to MMYYYY
-                const dateParts = formattedDate.split('-');
                 if (dateParts.length === 3) {
                     // [DD, MM, YYYY]
-                    const month = dateParts[1];
-                    const year = dateParts[2].slice(-2); // Take last 2 digits for YY
-                    formattedDate = `${month}${year}`;
+                    const mm = dateParts[1];
+                    const yyyy = dateParts[2];
+                    year = yyyy;
+                    mmyy = `${mm}${yyyy.slice(-2)}`;
                 }
 
                 const safeNpwp = meta.npwp.replace(/[^0-9]/g, '');
-                // const safeName = meta.name.replace(/[^a-zA-Z0-9 _-]/g, '').trim();
+                const safeName = meta.name.replace(/[^a-zA-Z0-9 _-]/g, '').trim();
+                const safeDate = meta.date.replace(/[^0-9-]/g, '');
+                const safePeriod = (meta.period || '').replace(/[^0-9]/g, ''); // "012025" usually
 
-                // User requested: "{MMYY}-{npwp}-{invoiceNo}.pdf"
-                const newFilename = `${formattedDate}-${safeNpwp}-${matchedInvoice}.pdf`;
+                let newName = filenameFormat;
 
-                suggest({ filename: newFilename, conflictAction: 'uniquify' });
+                // Replace placeholders
+                newName = newName.replace(/{invoice}/g, matchedInvoice);
+                newName = newName.replace(/{npwp}/g, safeNpwp);
+                newName = newName.replace(/{name}/g, safeName);
+                newName = newName.replace(/{date}/g, safeDate);
+                newName = newName.replace(/{mmyy}/g, mmyy);
+                newName = newName.replace(/{year}/g, year);
+                newName = newName.replace(/{period}/g, safePeriod);
+
+                // Ensure .pdf extension
+                if (!newName.toLowerCase().endsWith('.pdf')) {
+                    newName += '.pdf';
+                }
+
+                suggest({ filename: newName, conflictAction: 'uniquify' });
                 return;
             }
         }

@@ -2,7 +2,8 @@
 import { useState, useRef } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Download, Calculator, X } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Download, Calculator, X, Settings, ChevronLeft } from 'lucide-react';
 import { useScraperStore } from '@/stores/scraper-store';
 import { toast } from 'sonner';
 
@@ -14,6 +15,59 @@ const CalculatorWidget = () => {
     const [pdfStatus, setPdfStatus] = useState<'idle' | 'running' | 'cancelled'>('idle');
     const [pdfProgress, setPdfProgress] = useState({ current: 0, total: 0 });
     const pdfAbortController = useRef<boolean>(false); // Simple boolean flag for loop interruption
+
+    // Settings
+    const [showSettings, setShowSettings] = useState(false);
+    const [filenameFormat, setFilenameFormat] = useState(() => {
+        let val = localStorage.getItem('coretax_filename_format') || '{mmyy}-{npwp}-{invoice}';
+        if (val.toLowerCase().endsWith('.pdf')) val = val.slice(0, -4);
+        return val;
+    });
+
+    const handleFormatChange = (val: string) => {
+        // Prevent user from manually typing .pdf
+        let clean = val;
+        if (clean.toLowerCase().endsWith('.pdf')) clean = clean.slice(0, -4);
+        setFilenameFormat(clean);
+        localStorage.setItem('coretax_filename_format', clean);
+    };
+
+    const insertToken = (token: string) => {
+        const newVal = filenameFormat + token;
+        handleFormatChange(newVal);
+    };
+
+    const getPreview = (fmt: string) => {
+        let p = fmt;
+        const dummy = {
+            invoice: '010001230009',
+            npwp: '012345678912000',
+            name: 'PT_SEJAHTERA_ABADI',
+            date: '19112025',
+            mmyy: '1125',
+            year: '2025',
+            period: '112025'
+        };
+
+        p = p.replace(/{invoice}/g, dummy.invoice);
+        p = p.replace(/{npwp}/g, dummy.npwp);
+        p = p.replace(/{name}/g, dummy.name);
+        p = p.replace(/{date}/g, dummy.date);
+        p = p.replace(/{mmyy}/g, dummy.mmyy);
+        p = p.replace(/{year}/g, dummy.year);
+        p = p.replace(/{period}/g, dummy.period);
+
+        if (!p.endsWith('.pdf')) p += '.pdf';
+
+        return p;
+    };
+
+    const tokens = ['{invoice}', '{npwp}', '{name}', '{date}', '{mmyy}', '{year}', '{period}'];
+    const presets = [
+        { label: 'Default', val: '{mmyy}-{npwp}-{invoice}' },
+        { label: 'Simple', val: '{invoice}' },
+        { label: 'With Name', val: '{date}-{name}-{invoice}' },
+    ];
 
     // Formatting helper
     const fmt = (n: number) => new Intl.NumberFormat('id-ID').format(n);
@@ -92,7 +146,7 @@ const CalculatorWidget = () => {
         // 2. Collect unique IDs (Invoice Numbers)
         const checkedRows = document.querySelectorAll('table tbody tr input[type="checkbox"]:checked');
         const targetIds: string[] = [];
-        const fileMap: Record<string, { date: string; npwp: string; name: string }> = {};
+        const fileMap: Record<string, { date: string; npwp: string; name: string; period: string }> = {};
 
         checkedRows.forEach((checkbox) => {
             const row = checkbox.closest('tr');
@@ -105,17 +159,18 @@ const CalculatorWidget = () => {
                 const dateText = cells[6].innerText.replace(/Tanggal Faktur Pajak/gi, '').trim();
                 const npwpText = cells[2].innerText.replace(/NPWP Pembeli.*/gi, '').trim();
                 const nameText = cells[3].innerText.replace(/Nama Pembeli/gi, '').trim();
+                const periodText = (cells[7]?.innerText || '').replace(/Masa Pajak/gi, '').trim();
 
                 if (cleanId) {
                     targetIds.push(cleanId);
-                    fileMap[cleanId] = { date: dateText, npwp: npwpText, name: nameText };
+                    fileMap[cleanId] = { date: dateText, npwp: npwpText, name: nameText, period: periodText };
                 }
             }
         });
 
         // Register metadata
         if (Object.keys(fileMap).length > 0) {
-            try { chrome.runtime.sendMessage({ type: 'REGISTER_FILE_MAP', data: fileMap }); } catch (e) { /* ignore */ }
+            try { chrome.runtime.sendMessage({ type: 'REGISTER_FILE_MAP', data: fileMap, format: filenameFormat }); } catch (e) { /* ignore */ }
         }
 
         if (targetIds.length === 0) {
@@ -187,54 +242,135 @@ const CalculatorWidget = () => {
                 <div className="p-4 space-y-4">
                     <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                            <div className="h-8 w-8 rounded-lg bg-brand-yellow/10 flex items-center justify-center">
-                                <Calculator className="h-5 w-5 text-yellow-700" />
-                            </div>
+                            {showSettings ? (
+                                <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-slate-100" onClick={() => setShowSettings(false)}>
+                                    <ChevronLeft className="h-5 w-5 text-slate-600" />
+                                </Button>
+                            ) : (
+                                <div className="h-8 w-8 rounded-lg bg-brand-yellow/10 flex items-center justify-center">
+                                    <Calculator className="h-5 w-5 text-yellow-700" />
+                                </div>
+                            )}
                             <div>
-                                <h3 className="font-semibold text-sm text-brand-blue">Tax Calculator</h3>
-                                <p className="text-xs text-slate-500">{selectedCount} rows selected</p>
+                                <h3 className="font-semibold text-sm text-brand-blue">{showSettings ? 'Settings' : 'Tax Calculator'}</h3>
+                                {!showSettings && <p className="text-xs text-slate-500">{selectedCount} rows selected</p>}
                             </div>
                         </div>
-                        <Button variant="ghost" size="icon" className="h-6 w-6 text-slate-400 hover:text-slate-600" onClick={() => setIsVisible(false)}>
-                            <X className="h-4 w-4" />
-                        </Button>
-                    </div>
-
-                    <div className="bg-slate-50 p-3 rounded-md space-y-1 border border-slate-100">
-                        <div className="flex justify-between text-xs">
-                            <span className="text-slate-500">Total DPP</span>
-                            <span className="font-mono font-medium text-slate-700">{fmt(dppTotal)}</span>
-                        </div>
-                        <div className="flex justify-between text-xs">
-                            <span className="text-slate-500">Total PPN</span>
-                            <span className="font-mono font-medium text-slate-700">{fmt(ppnTotal)}</span>
-                        </div>
-                        <div className="h-px bg-slate-200 my-1" />
-                        <div className="flex justify-between text-sm font-bold text-brand-blue">
-                            <span>Total</span>
-                            <span className="font-mono">{fmt(dppTotal + ppnTotal)}</span>
-                        </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                        {/* Single Page Excel */}
-                        <Button size="sm" className="w-full bg-brand-yellow text-brand-blue hover:bg-brand-yellow/90 font-semibold" onClick={handleExport} disabled={pdfStatus === 'running'}>
-                            <Download className="mr-2 h-3 w-3" />
-                            To Excel
-                        </Button>
-
-                        {/* PDF Download with Cancel */}
-                        {pdfStatus === 'running' ? (
-                            <Button size="sm" variant="destructive" className="w-full" onClick={handleCancelPdf}>
-                                <X className="mr-2 h-3 w-3" />
-                                Stop ({pdfProgress.current}/{pdfProgress.total})
+                        <div className="flex gap-1">
+                            {!showSettings && (
+                                <Button variant="ghost" size="icon" className="h-6 w-6 text-slate-400 hover:text-slate-600" onClick={() => setShowSettings(true)}>
+                                    <Settings className="h-4 w-4" />
+                                </Button>
+                            )}
+                            <Button variant="ghost" size="icon" className="h-6 w-6 text-slate-400 hover:text-slate-600" onClick={() => setIsVisible(false)}>
+                                <X className="h-4 w-4" />
                             </Button>
-                        ) : (
-                            <Button size="sm" variant="outline" className="w-full border-slate-200 text-slate-600 bg-white hover:bg-slate-50 hover:text-brand-blue" onClick={handleDownloadPDFs}>
-                                Get PDFs
-                            </Button>
-                        )}
+                        </div>
                     </div>
+
+                    {showSettings ? (
+                        <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
+
+                            {/* Preview Section */}
+                            <div className="space-y-1.5">
+                                <label className="text-[10px] uppercase font-bold text-slate-400">Live Preview</label>
+                                <div className="bg-slate-100 p-3 rounded-md border border-slate-200 text-xs font-mono text-slate-700 break-all">
+                                    {getPreview(filenameFormat)}
+                                </div>
+                            </div>
+
+                            {/* Input Section */}
+                            <div className="space-y-1.5">
+                                <label className="text-[10px] uppercase font-bold text-slate-400">Format Pattern</label>
+                                <div className="flex items-center gap-1">
+                                    <input
+                                        type="text"
+                                        className="w-full text-xs p-2 rounded border border-slate-200 focus:border-brand-blue focus:ring-1 focus:ring-brand-blue outline-none font-mono"
+                                        value={filenameFormat}
+                                        onChange={(e) => handleFormatChange(e.target.value)}
+                                        placeholder="e.g. {invoice}"
+                                    />
+                                    <span className="text-xs font-mono text-slate-500 font-medium">.pdf</span>
+                                </div>
+                            </div>
+
+                            {/* Tokens Section */}
+                            <div className="space-y-1.5">
+                                <label className="text-[10px] uppercase font-bold text-slate-400">Insert Token</label>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {tokens.map(t => (
+                                        <Badge
+                                            key={t}
+                                            variant="secondary"
+                                            className="cursor-pointer hover:bg-brand-blue hover:text-white transition-colors border border-slate-200"
+                                            onClick={() => insertToken(t)}
+                                        >
+                                            {t}
+                                        </Badge>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="h-px bg-slate-100" />
+
+                            {/* Presets Section */}
+                            <div className="space-y-1.5">
+                                <label className="text-[10px] uppercase font-bold text-slate-400">Presets</label>
+                                <div className="grid grid-cols-3 gap-2">
+                                    {presets.map(p => (
+                                        <Button
+                                            key={p.label}
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => handleFormatChange(p.val)}
+                                            className="h-7 text-[10px]"
+                                        >
+                                            {p.label}
+                                        </Button>
+                                    ))}
+                                </div>
+                            </div>
+
+                        </div>
+                    ) : (
+                        <>
+                            <div className="bg-slate-50 p-3 rounded-md space-y-1 border border-slate-100">
+                                <div className="flex justify-between text-xs">
+                                    <span className="text-slate-500">Total DPP</span>
+                                    <span className="font-mono font-medium text-slate-700">{fmt(dppTotal)}</span>
+                                </div>
+                                <div className="flex justify-between text-xs">
+                                    <span className="text-slate-500">Total PPN</span>
+                                    <span className="font-mono font-medium text-slate-700">{fmt(ppnTotal)}</span>
+                                </div>
+                                <div className="h-px bg-slate-200 my-1" />
+                                <div className="flex justify-between text-sm font-bold text-brand-blue">
+                                    <span>Total</span>
+                                    <span className="font-mono">{fmt(dppTotal + ppnTotal)}</span>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2">
+                                {/* Single Page Excel */}
+                                <Button size="sm" className="w-full bg-brand-yellow text-brand-blue hover:bg-brand-yellow/90 font-semibold" onClick={handleExport} disabled={pdfStatus === 'running'}>
+                                    <Download className="mr-2 h-3 w-3" />
+                                    To Excel
+                                </Button>
+
+                                {/* PDF Download with Cancel */}
+                                {pdfStatus === 'running' ? (
+                                    <Button size="sm" variant="destructive" className="w-full" onClick={handleCancelPdf}>
+                                        <X className="mr-2 h-3 w-3" />
+                                        Stop ({pdfProgress.current}/{pdfProgress.total})
+                                    </Button>
+                                ) : (
+                                    <Button size="sm" variant="outline" className="w-full border-slate-200 text-slate-600 bg-white hover:bg-slate-50 hover:text-brand-blue" onClick={handleDownloadPDFs}>
+                                        Get PDFs
+                                    </Button>
+                                )}
+                            </div>
+                        </>
+                    )}
                 </div>
             </Card>
         </div>
