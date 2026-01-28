@@ -41,11 +41,8 @@ const CalculatorWidget = () => {
 
     // --- PDF DOWNLOAD ACTIONS ---
     const handleDownloadPDFs = async () => {
-        // 1. Bypass window.confirm which blocks the download flow
-        const bypassScript = document.createElement('script');
-        bypassScript.textContent = 'window.confirm = function(){ return true; }; window.alert = function(){ return true; };';
-        (document.head || document.documentElement).appendChild(bypassScript);
-        bypassScript.remove();
+        // 1. Send message to background to inject bypass script (avoids CSP issues)
+        chrome.runtime.sendMessage({ type: 'EXECUTE_BYPASS' });
 
         // 2. Collect unique IDs (Invoice Numbers)
         const checkedRows = document.querySelectorAll('table tbody tr input[type="checkbox"]:checked');

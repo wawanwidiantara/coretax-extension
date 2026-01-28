@@ -59,4 +59,25 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
     suggest({ filename: downloadItem.filename, conflictAction: 'uniquify' });
 });
 
+chrome.runtime.onMessage.addListener((message, sender) => {
+    if (message.type === 'REGISTER_FILE_MAP') {
+        Object.assign(invoiceMetadataMap, message.data);
+    }
+
+    if (message.type === 'EXECUTE_BYPASS') {
+        if (sender.tab?.id) {
+            chrome.scripting.executeScript({
+                target: { tabId: sender.tab.id },
+                world: 'MAIN',
+                func: () => {
+                    // @ts-ignore
+                    window.confirm = function () { return true; };
+                    // @ts-ignore
+                    window.alert = function () { return true; };
+                }
+            }).catch(err => console.error("Failed to inject bypass:", err));
+        }
+    }
+});
+
 console.log("Background service worker active with Auto-Rename");
