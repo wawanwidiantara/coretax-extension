@@ -38,15 +38,15 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
                 if (dateParts.length === 3) {
                     // [DD, MM, YYYY]
                     const month = dateParts[1];
-                    const year = dateParts[2];
+                    const year = dateParts[2].slice(-2); // Take last 2 digits for YY
                     formattedDate = `${month}${year}`;
                 }
 
                 const safeNpwp = meta.npwp.replace(/[^0-9]/g, '');
                 // const safeName = meta.name.replace(/[^a-zA-Z0-9 _-]/g, '').trim();
 
-                // User requested: "{month}{year}-{npwp}.pdf"
-                const newFilename = `${formattedDate}-${safeNpwp}.pdf`;
+                // User requested: "{MMYY}-{npwp}-{invoiceNo}.pdf"
+                const newFilename = `${formattedDate}-${safeNpwp}-${matchedInvoice}.pdf`;
 
                 console.log(`[Background] Renaming ${filename} -> ${newFilename}`);
                 suggest({ filename: newFilename, conflictAction: 'uniquify' });

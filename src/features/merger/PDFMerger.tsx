@@ -71,8 +71,8 @@ const PDFMerger = () => {
             let hasGroups = false;
 
             files.forEach(item => {
-                // Matches "112025-1234..." in "112025-1234... (1).pdf"
-                const match = item.file.name.match(/^(\d{6}-\d+)/);
+                // Matches "1125-1234..." (MMYY) or "112025-1234..." (MMYYYY)
+                const match = item.file.name.match(/^(\d{4,6}-\d+)/);
                 const key = match ? match[1] : 'Uncategorized';
 
                 if (!groups[key]) groups[key] = [];
